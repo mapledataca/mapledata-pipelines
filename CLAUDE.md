@@ -26,6 +26,7 @@ All tests must pass before committing.
 - `src/ingest/run_ingestion.py`: Databricks notebook (source format) used as a job task.
 - `src/platform/catalog_setup.py`: builds idempotent Unity Catalog DDL.
 - `src/platform/bootstrap_catalog.py`: Databricks notebook that executes the DDL.
+- `tools/`: development Databricks notebooks (e.g. `run_tests`, `discover_datasets`); not run as job tasks.
 - `tests/`: pytest suites; `conftest.py` puts `src/ingest` and `src/platform` on `sys.path`.
 
 ## Rules
