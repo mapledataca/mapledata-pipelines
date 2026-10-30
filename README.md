@@ -42,6 +42,7 @@ src/ingest/ckan_ingest.py        generic CKAN ingester
 src/ingest/run_ingestion.py      Databricks notebook: run ingestion (job task)
 src/platform/catalog_setup.py    builds the Unity Catalog DDL
 src/platform/bootstrap_catalog.py Databricks notebook: create catalog from zero
+tools/                           development notebooks (e.g. run_tests)
 tests/                           unit tests (no network, no Spark)
 docs/architecture.md             design, conventions and decisions
 CLAUDE.md                        instructions for AI coding agents
