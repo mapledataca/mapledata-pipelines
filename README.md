@@ -39,7 +39,7 @@ Orchestrated by Lakeflow Jobs. Full design and decisions:
 ```
 config/datasets.yml              dataset registry (add datasets here)
 src/ingest/ckan_ingest.py        generic CKAN ingester
-src/ingest/ckan_discover.py      search CKAN and draft registry entries
+src/ingest/ckan_discover.py      search CKAN, build snapshot rows, draft entries
 src/ingest/run_ingestion.py      Databricks notebook: run ingestion (job task)
 src/platform/catalog_setup.py    builds the Unity Catalog DDL
 src/platform/bootstrap_catalog.py Databricks notebook: create catalog from zero
@@ -53,7 +53,8 @@ CLAUDE.md                        instructions for AI coding agents
 
 1. Clone this repository into a Databricks Git folder (under your user folder).
 2. Run `src/platform/bootstrap_catalog` once (set `dry_run=true` first to
-   review the statements). It creates the catalog, schemas and volumes.
+   review the statements). It creates the catalog, schemas, volumes and the
+   `metadata` snapshot table and view used by `tools/discover_datasets`.
 3. Run the tests from a notebook at the repository root:
    ```python
    %pip install pytest

@@ -1,41 +1,65 @@
 """
 ckan_discover.py
 
-Helpers to find candidate datasets on a CKAN portal and draft a registry
-entry for config/datasets.yml. Used by the tools/discover_datasets notebook.
+Helpers to find candidate datasets on a CKAN portal, record what was found as
+snapshot rows, and draft registry entries for config/datasets.yml. Used by the
+tools/discover_datasets notebook.
 
-Nothing here writes to the registry: the output is text for a human to review
-and paste. Network access goes through an injected session, like ckan_ingest.
+Nothing here writes to the registry: drafts are text for a human to review and
+paste. Network access goes through an injected session, like ckan_ingest.
 """
 
 from __future__ import annotations
 
 import json
 import re
-from typing import Any
+import time
+from datetime import date, datetime
+from typing import Any, Callable, Iterable, Optional
 
 import ckan_ingest as ci
 
 #: Longest registry key the drafts will generate.
 MAX_KEY_LENGTH = 50
 
+#: Columns of mapledata.metadata.ckan_dataset_snapshot, in order. The table is
+#: created by catalog_setup.py, which keeps its own copy of this list; a test
+#: checks that the two agree.
+SNAPSHOT_COLUMNS = (
+    ("run_id", "STRING"),
+    ("discovered_at", "TIMESTAMP"),
+    ("base_url", "STRING"),
+    ("search_query", "STRING"),
+    ("ckan_id", "STRING"),
+    ("name", "STRING"),
+    ("title", "STRING"),
+    ("organization_name", "STRING"),
+    ("organization_title", "STRING"),
+    ("formats", "ARRAY<STRING>"),
+    ("resource_count", "INT"),
+    ("frequency", "STRING"),
+    ("coverage_start", "DATE"),
+    ("coverage_end", "DATE"),
+    ("metadata_modified", "STRING"),
+    ("is_registered", "BOOLEAN"),
+)
 
-def search_packages(
-    session: Any,
-    query: str,
-    base_url: str = ci.DEFAULT_BASE_URL,
-    rows: int = 10,
-    timeout: tuple = (10, 60),
-) -> list:
-    """Call CKAN package_search and return the list of matching packages.
+#: The same columns as a Spark DDL schema string, for spark.createDataFrame.
+SNAPSHOT_SCHEMA_DDL = ", ".join(f"{name} {kind}" for name, kind in SNAPSHOT_COLUMNS)
 
-    Raises:
-        ci.UpstreamError: non-200 status, non-JSON body or success=false.
-        requests.RequestException: network-level failures.
-    """
+
+# ---------------------------------------------------------------------------
+# Search (paginated)
+# ---------------------------------------------------------------------------
+
+
+def _search_page(
+    session: Any, query: str, base_url: str, rows: int, start: int, timeout: tuple
+) -> tuple:
+    """Fetch one package_search page; return (total_count, packages)."""
     response = session.get(
         base_url.rstrip("/") + "/package_search",
-        params={"q": query, "rows": rows},
+        params={"q": query, "rows": rows, "start": start},
         timeout=timeout,
     )
     if response.status_code != 200:
@@ -50,10 +74,49 @@ def search_packages(
         )
 
     payload = response.json()
-    results = (payload.get("result") or {}).get("results")
-    if not payload.get("success") or not isinstance(results, list):
+    result = payload.get("result") or {}
+    results, count = result.get("results"), result.get("count")
+    if not payload.get("success") or not isinstance(results, list) or not isinstance(count, int):
         raise ci.UpstreamError(f"CKAN reported failure: {str(payload)[:200]}")
-    return results
+    return count, results
+
+
+def search_packages(
+    session: Any,
+    query: str,
+    base_url: str = ci.DEFAULT_BASE_URL,
+    page_size: int = 100,
+    timeout: tuple = (10, 60),
+    pause_seconds: float = 1.0,
+    sleep: Callable[[float], None] = time.sleep,
+) -> list:
+    """Return every package matching the query, fetching all pages.
+
+    Pages advance by the number of packages actually returned, so a server that
+    caps `rows` below page_size is still read to the end. An empty page stops
+    the loop. Packages seen twice (the index can shift between pages) are kept
+    once.
+
+    Raises:
+        ci.UpstreamError: non-200 status, non-JSON body or success=false.
+        requests.RequestException: network-level failures.
+    """
+    packages, seen, start = [], set(), 0
+    while True:
+        count, page = _search_page(session, query, base_url, page_size, start, timeout)
+        for package in page:
+            if package.get("id") not in seen:
+                seen.add(package.get("id"))
+                packages.append(package)
+        start += len(page)
+        if not page or start >= count:
+            return packages
+        sleep(pause_seconds)
+
+
+# ---------------------------------------------------------------------------
+# Field extraction
+# ---------------------------------------------------------------------------
 
 
 def package_title(package: dict) -> str:
@@ -62,14 +125,36 @@ def package_title(package: dict) -> str:
     return translated.get("en") or package.get("title") or package.get("name") or ""
 
 
-def package_formats(package: dict) -> tuple:
-    """Sorted, upper-case formats of the package's resources."""
-    formats = {
-        str(res.get("format", "")).upper()
-        for res in package.get("resources", [])
-        if res.get("format")
-    }
-    return tuple(sorted(formats))
+def package_formats(package: dict) -> list:
+    """Sorted, upper-case, unique formats of the package's resources."""
+    return sorted(
+        {
+            str(res.get("format", "")).upper()
+            for res in package.get("resources", [])
+            if res.get("format")
+        }
+    )
+
+
+def organization_fields(package: dict) -> tuple:
+    """Return (organization_name, organization_title).
+
+    open.canada.ca titles are bilingual ("English | Francais"); only the
+    English part is kept.
+    """
+    organization = package.get("organization") or {}
+    title = organization.get("title") or ""
+    return organization.get("name") or "", title.split("|")[0].strip()
+
+
+def parse_date(value: Any) -> Optional[date]:
+    """Date from a CKAN timestamp such as "2015-01-01 00:00:00", else None."""
+    if not isinstance(value, str):
+        return None
+    try:
+        return date.fromisoformat(value.strip()[:10])
+    except ValueError:
+        return None
 
 
 def slugify_key(title: str) -> str:
@@ -79,18 +164,69 @@ def slugify_key(title: str) -> str:
     return slug if slug and slug[0].isalnum() else "dataset"
 
 
-def summarise_package(package: dict) -> dict:
-    """The fields worth scanning when choosing a dataset."""
-    organization = package.get("organization") or {}
-    org_title = organization.get("title_translated") or {}
-    return {
-        "title": package_title(package),
-        "ckan_id": package.get("id", ""),
-        "organization": org_title.get("en") or organization.get("title") or "",
-        "formats": package_formats(package),
-        "resources": len(package.get("resources", [])),
-        "metadata_modified": package.get("metadata_modified", ""),
-    }
+# ---------------------------------------------------------------------------
+# Registry cross-check
+# ---------------------------------------------------------------------------
+
+
+def registered_ids(specs: Iterable, base_url: str) -> set:
+    """ckan_id values of every registry entry (enabled or not) for this portal."""
+    wanted = base_url.rstrip("/")
+    return {s.ckan_id for s in specs if s.base_url.rstrip("/") == wanted}
+
+
+def is_registered(package: dict, registered: set) -> bool:
+    """True when the registry's ckan_id is the package's id or its name."""
+    return package.get("id") in registered or package.get("name") in registered
+
+
+# ---------------------------------------------------------------------------
+# Snapshot rows
+# ---------------------------------------------------------------------------
+
+
+def build_snapshot_rows(
+    packages: Iterable,
+    specs: Iterable,
+    base_url: str,
+    query: str,
+    discovered_at: datetime,
+    run_id: str,
+) -> list:
+    """One dict per package, keyed by SNAPSHOT_COLUMNS.
+
+    Every row of a call shares discovered_at and run_id.
+    """
+    registered = registered_ids(specs, base_url)
+    rows = []
+    for package in packages:
+        org_name, org_title = organization_fields(package)
+        rows.append(
+            {
+                "run_id": run_id,
+                "discovered_at": discovered_at,
+                "base_url": base_url,
+                "search_query": query,
+                "ckan_id": package.get("id", ""),
+                "name": package.get("name", ""),
+                "title": package_title(package),
+                "organization_name": org_name,
+                "organization_title": org_title,
+                "formats": package_formats(package),
+                "resource_count": len(package.get("resources", [])),
+                "frequency": package.get("frequency"),
+                "coverage_start": parse_date(package.get("time_period_coverage_start")),
+                "coverage_end": parse_date(package.get("time_period_coverage_end")),
+                "metadata_modified": package.get("metadata_modified"),
+                "is_registered": is_registered(package, registered),
+            }
+        )
+    return rows
+
+
+# ---------------------------------------------------------------------------
+# Registry drafts
+# ---------------------------------------------------------------------------
 
 
 def registry_entry_yaml(package: dict, domain: str) -> str:
@@ -115,3 +251,16 @@ def registry_entry_yaml(package: dict, domain: str) -> str:
         f"    description: {json.dumps(package_title(package), ensure_ascii=False)}"
     )
     return "\n".join(lines)
+
+
+def unregistered_drafts(
+    packages: Iterable, registered: set, domain: str, max_drafts: int
+) -> tuple:
+    """Return (draft YAML strings, number of unregistered packages left out).
+
+    Only packages missing from the registry get a draft; max_drafts caps the
+    output (0 prints none).
+    """
+    pending = [p for p in packages if not is_registered(p, registered)]
+    shown = pending[: max(max_drafts, 0)]
+    return [registry_entry_yaml(p, domain) for p in shown], len(pending) - len(shown)

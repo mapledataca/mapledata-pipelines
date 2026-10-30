@@ -24,7 +24,35 @@ def test_build_ddl_order_and_core_objects():
 
 def test_every_statement_is_idempotent():
     for sql in cs.build_ddl("mapledata", ["immigration", "housing"]):
-        assert "IF NOT EXISTS" in sql
+        # Databricks does not allow IF NOT EXISTS together with OR REPLACE,
+        # so the view uses CREATE OR REPLACE VIEW.
+        assert "IF NOT EXISTS" in sql or sql.startswith("CREATE OR REPLACE VIEW")
+
+
+def test_metadata_schema_table_and_view_are_created_in_order():
+    ddl = cs.build_ddl("mapledata", ["immigration"])
+    schema = next(i for i, s in enumerate(ddl) if s.startswith("CREATE SCHEMA") and "`metadata`" in s)
+    table = next(i for i, s in enumerate(ddl) if s.startswith("CREATE TABLE") and "ckan_dataset_snapshot" in s)
+    view = next(i for i, s in enumerate(ddl) if "VIEW" in s and "ckan_dataset_current" in s)
+    assert schema < table < view
+
+
+def test_snapshot_table_defines_every_column_with_its_type():
+    ddl = cs.build_ddl("mapledata", [])
+    table = next(s for s in ddl if s.startswith("CREATE TABLE"))
+    assert "`mapledata`.`metadata`.`ckan_dataset_snapshot`" in table
+    for name, kind in cs.SNAPSHOT_COLUMNS:
+        assert f"{name} {kind}" in table
+    assert "run_id STRING" in table and "formats ARRAY<STRING>" in table
+
+
+def test_current_view_keeps_latest_row_per_ckan_id():
+    ddl = cs.build_ddl("mapledata", [])
+    view = next(s for s in ddl if s.startswith("CREATE OR REPLACE VIEW"))
+    assert "`mapledata`.`metadata`.`ckan_dataset_current`" in view
+    assert "FROM `mapledata`.`metadata`.`ckan_dataset_snapshot`" in view
+    assert "QUALIFY row_number() OVER (PARTITION BY ckan_id ORDER BY discovered_at DESC" in view
+    assert view.endswith("= 1")
 
 
 def test_domain_schemas_three_layers_deduplicated_and_sorted():

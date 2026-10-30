@@ -20,6 +20,9 @@ mapledata                          catalog
 │   ├── raw     (managed volume)   data files from the ingester
 │   └── meta    (managed volume)   metadata cache + run logs
 ├── shared                         schema: dim_geography, dim_noc, dim_date
+├── metadata                       schema: platform metadata
+│   ├── ckan_dataset_snapshot      table: append-only discovery results
+│   └── ckan_dataset_current       view: latest row per ckan_id
 └── <domain>_bronze|silver|gold    one set of schemas per domain
 ```
 
@@ -57,6 +60,17 @@ Lakeflow Connect has no CKAN connector. A Lakeflow Connect *custom connector*
 Datasets are declared in `config/datasets.yml`. Adding a dataset is a
 configuration change. The registry is validated at load time (required keys,
 unknown keys, duplicate keys, safe names, valid regex).
+
+### Dataset discovery
+
+`tools/discover_datasets` searches a CKAN portal (all result pages) and
+appends one row per dataset to `metadata.ckan_dataset_snapshot`. Rows of one
+run share `run_id` and `discovered_at`; `is_registered` says whether
+`config/datasets.yml` already lists the dataset (matched by CKAN id or name,
+same portal, enabled or not). Rows are never deduplicated, so the table is a
+history; `metadata.ckan_dataset_current` keeps the newest row per `ckan_id`
+(`QUALIFY row_number()`). Discovery only prints draft registry entries; adding
+a dataset stays a manual, reviewed change to the registry.
 
 ### Update patterns
 
