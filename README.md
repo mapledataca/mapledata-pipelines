@@ -39,10 +39,11 @@ Orchestrated by Lakeflow Jobs. Full design and decisions:
 ```
 config/datasets.yml              dataset registry (add datasets here)
 src/ingest/ckan_ingest.py        generic CKAN ingester
+src/ingest/ckan_discover.py      search CKAN and draft registry entries
 src/ingest/run_ingestion.py      Databricks notebook: run ingestion (job task)
 src/platform/catalog_setup.py    builds the Unity Catalog DDL
 src/platform/bootstrap_catalog.py Databricks notebook: create catalog from zero
-tools/                           development notebooks (e.g. run_tests)
+tools/                           development notebooks (run_tests, discover_datasets)
 tests/                           unit tests (no network, no Spark)
 docs/architecture.md             design, conventions and decisions
 CLAUDE.md                        instructions for AI coding agents

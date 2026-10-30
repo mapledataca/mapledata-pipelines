@@ -23,6 +23,7 @@ All tests must pass before committing.
 
 - `config/datasets.yml`: dataset registry. Adding a dataset = adding an entry.
 - `src/ingest/ckan_ingest.py`: generic CKAN ingester (pure Python, injected session).
+- `src/ingest/ckan_discover.py`: searches CKAN and drafts registry entries (used by `tools/discover_datasets.py`).
 - `src/ingest/run_ingestion.py`: Databricks notebook (source format) used as a job task.
 - `src/platform/catalog_setup.py`: builds idempotent Unity Catalog DDL.
 - `src/platform/bootstrap_catalog.py`: Databricks notebook that executes the DDL.
