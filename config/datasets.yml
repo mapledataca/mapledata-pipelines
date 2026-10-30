@@ -1,0 +1,47 @@
+# Dataset registry for ckan_ingest.py
+#
+# Each entry describes one CKAN dataset. Adding a dataset = adding an entry.
+#
+# Required keys:  key, domain, ckan_id, update_pattern
+# Optional keys:  source, base_url, languages, formats, name_regex,
+#                 enabled, description
+#
+# update_pattern:
+#   new_file_per_period  publisher adds a new file each period
+#   overwrite_in_place   publisher replaces the same file; every version is
+#                        kept as a snapshot (feeds AUTO CDC FROM SNAPSHOT)
+
+defaults:
+  source: open_canada
+  base_url: https://open.canada.ca/data/api/action
+  languages: [en]
+
+datasets:
+  # --- Immigration ---------------------------------------------------------
+  - key: lmia_positive_employers
+    domain: immigration
+    ckan_id: 90fed587-1364-4f33-a9ee-208181dc0b97
+    update_pattern: new_file_per_period
+    formats: [CSV, XLSX, XLS]
+    description: >
+      ESDC TFWP Positive LMIA Employers List. Quarterly; one new file per
+      quarter. CSV until 2020Q3, XLSX afterwards.
+
+  - key: ircc_permanent_residents_monthly
+    domain: immigration
+    ckan_id: f7e5498e-0ad8-4417-85c9-9b8aff9b9eda
+    update_pattern: overwrite_in_place
+    # Restrict to the province/territory x immigration category table.
+    # VERIFY the exact resource name after the first metadata fetch
+    # (inspect package_show.json in the meta folder), then adjust if needed.
+    name_regex: "Province/Territory and Immigration Category"
+    description: >
+      IRCC Permanent Residents - Monthly IRCC Updates. Assumed to be updated
+      in place monthly; check resource last_modified to confirm.
+
+  - key: ircc_study_permit_holders_monthly
+    domain: immigration
+    ckan_id: 90115b00-f9b8-49e8-afa3-b4cff8facaee
+    update_pattern: overwrite_in_place
+    enabled: false   # turn on after the PR dataset works end to end
+    description: IRCC Temporary Residents - Study Permit Holders (monthly).

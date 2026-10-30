@@ -1,0 +1,449 @@
+"""
+test_ckan_ingest.py
+
+Unit tests for src/ingest/ckan_ingest.py. No network and no Databricks needed:
+a fake HTTP session replaces requests, and pytest's tmp_path replaces the volume.
+
+Run locally (from the repository root):
+    pytest -v tests/
+
+Run in a Databricks notebook (repository checked out as a Git folder):
+    import sys, pytest
+    sys.dont_write_bytecode = True
+    pytest.main(["-v", "-p", "no:cacheprovider", "tests/"])
+
+Optional live smoke test (real network, skipped by default):
+    CKAN_LIVE_TEST=1 pytest -v -k live tests/
+"""
+
+import hashlib
+import json
+import os
+from pathlib import Path
+
+import pytest
+import requests
+
+import ckan_ingest as ci
+
+ROOT = Path(__file__).resolve().parents[1]
+XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+# ---------------------------------------------------------------------------
+# Test doubles
+# ---------------------------------------------------------------------------
+
+
+class FakeResponse:
+    """Minimal stand-in for requests.Response."""
+
+    def __init__(self, status=200, content=b"", content_type="application/json"):
+        self.status_code = status
+        self.content = content
+        self.headers = {"content-type": content_type}
+
+    @property
+    def text(self):
+        return self.content.decode("utf-8", errors="replace")
+
+    def json(self):
+        return json.loads(self.content)
+
+
+class FakeSession:
+    """Routes URL -> FakeResponse or Exception, and records every requested URL."""
+
+    def __init__(self, routes):
+        self.routes = dict(routes)
+        self.calls = []
+
+    def get(self, url, params=None, timeout=None):
+        self.calls.append(url)
+        if url not in self.routes:
+            raise AssertionError(f"unexpected URL requested: {url}")
+        outcome = self.routes[url]
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
+GATEWAY_TIMEOUT = FakeResponse(
+    504, b"<html><title>504 Gateway Time-out</title></html>", "text/html"
+)
+
+
+# ---------------------------------------------------------------------------
+# Builders
+# ---------------------------------------------------------------------------
+
+
+def make_spec(key="ds_a", pattern=ci.NEW_FILE, **overrides):
+    """A DatasetSpec with sensible test defaults."""
+    values = dict(
+        key=key,
+        domain="immigration",
+        ckan_id=f"{key}-id",
+        update_pattern=pattern,
+        base_url="https://ckan.example/api/action",
+    )
+    values.update(overrides)
+    return ci.DatasetSpec(**values)
+
+
+def make_resource(rid, lang="en", fmt="XLSX", name=None, created="2024-01-01",
+                  last_modified=None, url=None):
+    """A CKAN resource dict with only the fields the module reads."""
+    res = {
+        "id": rid,
+        "language": [lang],
+        "format": fmt,
+        "name": name or f"Resource {rid}",
+        "created": created,
+        "url": url if url is not None else f"https://files.example/{rid}/data_{lang}.xlsx",
+    }
+    if last_modified:
+        res["last_modified"] = last_modified
+    return res
+
+
+def metadata(resources, success=True):
+    """A 200 JSON response shaped like CKAN package_show."""
+    body = {"success": success, "result": {"resources": resources}}
+    return FakeResponse(200, json.dumps(body).encode())
+
+
+def api(spec):
+    return spec.package_show_url
+
+
+@pytest.fixture
+def settings(tmp_path):
+    """Landing and metadata roots in a fresh temp directory."""
+    return ci.RunSettings(
+        landing_root=str(tmp_path / "raw"),
+        meta_root=str(tmp_path / "_meta"),
+        timeout=(1, 1),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Registry parsing and validation
+# ---------------------------------------------------------------------------
+
+
+def test_parse_registry_applies_defaults_and_normalises_lists():
+    raw = {
+        "defaults": {"languages": ["en", "fr"], "source": "open_canada"},
+        "datasets": [
+            {"key": "a", "domain": "housing", "ckan_id": "x",
+             "update_pattern": ci.NEW_FILE, "formats": ["csv", "xlsx"]}
+        ],
+    }
+    (spec,) = ci.parse_registry(raw)
+    assert spec.languages == ("en", "fr")
+    assert spec.formats == ("CSV", "XLSX")  # upper-cased tuple
+    assert spec.source == "open_canada"
+
+
+def test_parse_registry_entry_overrides_defaults():
+    raw = {
+        "defaults": {"languages": ["en"]},
+        "datasets": [{"key": "a", "domain": "d", "ckan_id": "x",
+                      "update_pattern": ci.NEW_FILE, "languages": ["fr"]}],
+    }
+    assert ci.parse_registry(raw)[0].languages == ("fr",)
+
+
+@pytest.mark.parametrize(
+    "entry, message",
+    [
+        ({"key": "a", "domain": "d", "update_pattern": ci.NEW_FILE}, "missing"),
+        ({"key": "a", "domain": "d", "ckan_id": "x", "update_pattern": "weekly"},
+         "update_pattern"),
+        ({"key": "a", "domain": "d", "ckan_id": "x", "update_pattern": ci.NEW_FILE,
+          "colour": "red"}, "unknown keys"),
+        ({"key": "Bad Key", "domain": "d", "ckan_id": "x",
+          "update_pattern": ci.NEW_FILE}, "must match"),
+        ({"key": "a", "domain": "d", "ckan_id": "x", "update_pattern": ci.NEW_FILE,
+          "name_regex": "("}, "invalid name_regex"),
+    ],
+)
+def test_parse_registry_rejects_invalid_entries(entry, message):
+    with pytest.raises(ci.RegistryError, match=message):
+        ci.parse_registry({"datasets": [entry]})
+
+
+def test_parse_registry_rejects_duplicate_keys():
+    entry = {"key": "a", "domain": "d", "ckan_id": "x", "update_pattern": ci.NEW_FILE}
+    with pytest.raises(ci.RegistryError, match="duplicate"):
+        ci.parse_registry({"datasets": [entry, dict(entry)]})
+
+
+def test_shipped_registry_file_is_valid():
+    # Guards config/datasets.yml against typos before they reach a job run.
+    specs = ci.load_registry(str(ROOT / "config" / "datasets.yml"))
+    keys = [s.key for s in specs]
+    assert "lmia_positive_employers" in keys
+    assert len(keys) == len(set(keys))
+
+
+def test_select_specs_filters_enabled_domain_and_key():
+    specs = [
+        make_spec("a", domain="immigration"),
+        make_spec("b", domain="housing"),
+        make_spec("c", domain="immigration", enabled=False),
+    ]
+    assert [s.key for s in ci.select_specs(specs)] == ["a", "b"]
+    assert [s.key for s in ci.select_specs(specs, domains=["housing"])] == ["b"]
+    assert [s.key for s in ci.select_specs(specs, keys=["a"])] == ["a"]
+
+
+# ---------------------------------------------------------------------------
+# Resource selection, versions and paths
+# ---------------------------------------------------------------------------
+
+
+def test_select_resources_applies_language_format_and_name_filters():
+    spec = make_spec(formats=("XLSX",), name_regex="province")
+    result = {"resources": [
+        make_resource("keep", name="PR by Province/Territory"),
+        make_resource("fr", lang="fr", name="PR by Province/Territory"),
+        make_resource("csv", fmt="CSV", name="PR by Province/Territory"),
+        make_resource("other", name="PR by Country of Citizenship"),
+        make_resource("nourl", url="", name="PR by Province/Territory"),
+    ]}
+    assert [r["id"] for r in ci.select_resources(result, spec)] == ["keep"]
+
+
+def test_select_resources_prefers_english_translated_name():
+    spec = make_spec(name_regex="province")
+    res = make_resource("a", name="Résidents par province")
+    res["name"] = "unrelated"
+    res["name_translated"] = {"en": "Residents by Province", "fr": "..."}
+    assert len(ci.select_resources({"resources": [res]}, spec)) == 1
+
+
+def test_select_resources_sorted_oldest_first():
+    spec = make_spec()
+    result = {"resources": [make_resource("new", created="2025"),
+                            make_resource("old", created="2014")]}
+    assert [r["id"] for r in ci.select_resources(result, spec)] == ["old", "new"]
+
+
+def test_resource_version_normalises_timestamp():
+    assert ci.resource_version({"last_modified": "2025-10-23T15:50:27.245365"}) == "20251023T155027"
+    assert ci.resource_version({"metadata_modified": "2024-01-02T03:04:05"}) == "20240102T030405"
+    assert ci.resource_version({}) is None
+
+
+def test_target_relpath_per_pattern():
+    res = make_resource("rid", url="https://x/download/tfwp_2025q2_pos_en.xlsx")
+    assert ci.target_relpath(res, make_spec(), None) == "rid_tfwp_2025q2_pos_en.xlsx"
+    snap = make_spec(pattern=ci.OVERWRITE)
+    assert ci.target_relpath(res, snap, "20251023T155027") == "rid/20251023T155027_tfwp_2025q2_pos_en.xlsx"
+    with pytest.raises(ValueError):
+        ci.target_relpath(res, snap, None)
+
+
+# ---------------------------------------------------------------------------
+# Metadata and cache fallback
+# ---------------------------------------------------------------------------
+
+
+def test_fetch_metadata_rejects_gateway_timeout_html():
+    spec = make_spec()
+    with pytest.raises(ci.UpstreamError, match="504"):
+        ci.fetch_metadata(FakeSession({api(spec): GATEWAY_TIMEOUT}), spec, (1, 1))
+
+
+def test_fetch_metadata_rejects_ckan_failure():
+    spec = make_spec()
+    with pytest.raises(ci.UpstreamError, match="CKAN reported failure"):
+        ci.fetch_metadata(FakeSession({api(spec): metadata([], success=False)}), spec, (1, 1))
+
+
+def test_get_metadata_caches_then_falls_back(settings):
+    spec = make_spec()
+    _, source = ci.get_metadata(FakeSession({api(spec): metadata([make_resource("a")])}), spec, settings)
+    assert source == "fresh"
+
+    result, source = ci.get_metadata(FakeSession({api(spec): GATEWAY_TIMEOUT}), spec, settings)
+    assert source == "cache"
+    assert result["resources"][0]["id"] == "a"
+
+
+def test_get_metadata_without_cache_raises(settings):
+    spec = make_spec()
+    with pytest.raises(ci.UpstreamError, match="no cache"):
+        ci.get_metadata(FakeSession({api(spec): requests.exceptions.ReadTimeout("slow")}), spec, settings)
+
+
+def test_metadata_caches_are_isolated_per_dataset(settings):
+    a, b = make_spec("a"), make_spec("b")
+    ci.get_metadata(FakeSession({api(a): metadata([make_resource("from_a")])}), a, settings)
+    with pytest.raises(ci.UpstreamError):  # b has no cache of its own
+        ci.get_metadata(FakeSession({api(b): GATEWAY_TIMEOUT}), b, settings)
+
+
+# ---------------------------------------------------------------------------
+# new_file_per_period
+# ---------------------------------------------------------------------------
+
+
+def test_new_file_downloads_then_skips_without_refetching(settings):
+    spec = make_spec()
+    r1, r2 = make_resource("r1", created="2014"), make_resource("r2", created="2015")
+    routes = {api(spec): metadata([r1, r2]),
+              r1["url"]: FakeResponse(200, b"one", XLSX),
+              r2["url"]: FakeResponse(200, b"two", XLSX)}
+
+    first = ci.ingest_dataset(FakeSession(routes), spec, settings, "run1")
+    assert first.ok and first.metadata_source == "fresh"
+    assert first.downloaded == ["r1_data_en.xlsx", "r2_data_en.xlsx"]
+
+    session = FakeSession(routes)
+    second = ci.ingest_dataset(session, spec, settings, "run2")
+    assert second.downloaded == []
+    assert sorted(second.skipped) == sorted(first.downloaded)
+    assert session.calls == [api(spec)]  # no file requested again
+
+    landing = ci.dataset_landing_dir(settings, spec)
+    assert (landing / "r1_data_en.xlsx").read_bytes() == b"one"
+
+
+def test_new_file_single_failure_then_rerun_fills_gap(settings):
+    spec = make_spec()
+    good, bad = make_resource("good", created="2014"), make_resource("bad", created="2015")
+    routes = {api(spec): metadata([good, bad]),
+              good["url"]: FakeResponse(200, b"ok", XLSX),
+              bad["url"]: requests.exceptions.ReadTimeout("slow")}
+
+    report = ci.ingest_dataset(FakeSession(routes), spec, settings, "run1")
+    assert not report.ok
+    assert report.failed[0][0] == "bad" and "ReadTimeout" in report.failed[0][1]
+
+    routes[bad["url"]] = FakeResponse(200, b"late", XLSX)
+    rerun = ci.ingest_dataset(FakeSession(routes), spec, settings, "run2")
+    assert rerun.ok
+    assert rerun.downloaded == ["bad_data_en.xlsx"]
+    assert rerun.skipped == ["good_data_en.xlsx"]
+
+
+def test_html_payload_is_rejected_and_nothing_written(settings):
+    spec = make_spec()
+    res = make_resource("a")
+    routes = {api(spec): metadata([res]),
+              res["url"]: FakeResponse(200, b"<html>error</html>", "text/html")}
+    report = ci.ingest_dataset(FakeSession(routes), spec, settings, "run1")
+    assert "HTML payload" in report.failed[0][1]
+    assert ci.completed_files(ci.dataset_landing_dir(settings, spec)) == set()
+
+
+# ---------------------------------------------------------------------------
+# overwrite_in_place (snapshots)
+# ---------------------------------------------------------------------------
+
+
+def test_snapshot_new_version_creates_new_file_same_version_skips(settings):
+    spec = make_spec(pattern=ci.OVERWRITE)
+    v1 = make_resource("pr", last_modified="2026-09-15T10:00:00.1")
+    routes = {api(spec): metadata([v1]), v1["url"]: FakeResponse(200, b"sept", XLSX)}
+    first = ci.ingest_dataset(FakeSession(routes), spec, settings, "run1")
+    assert first.downloaded == ["pr/20260915T100000_data_en.xlsx"]
+
+    # Same version: skipped without downloading the file again.
+    session = FakeSession(routes)
+    same = ci.ingest_dataset(session, spec, settings, "run2")
+    assert same.skipped == ["pr/20260915T100000_data_en.xlsx"]
+    assert session.calls == [api(spec)]
+
+    # Publisher replaces the file in place: a second snapshot is kept.
+    v2 = dict(v1, last_modified="2026-10-15T10:00:00")
+    routes = {api(spec): metadata([v2]), v2["url"]: FakeResponse(200, b"oct", XLSX)}
+    newer = ci.ingest_dataset(FakeSession(routes), spec, settings, "run3")
+    assert newer.downloaded == ["pr/20261015T100000_data_en.xlsx"]
+
+    landing = ci.dataset_landing_dir(settings, spec)
+    assert ci.completed_files(landing) == {
+        "pr/20260915T100000_data_en.xlsx",
+        "pr/20261015T100000_data_en.xlsx",
+    }
+
+
+def test_snapshot_without_timestamp_dedupes_by_content_hash(settings):
+    spec = make_spec(pattern=ci.OVERWRITE)
+    res = make_resource("pr")  # no last_modified / metadata_modified
+    routes = {api(spec): metadata([res]), res["url"]: FakeResponse(200, b"same", XLSX)}
+
+    first = ci.ingest_dataset(FakeSession(routes), spec, settings, "run1")
+    digest = hashlib.sha256(b"same").hexdigest()[:12]
+    assert first.downloaded == [f"pr/sha256-{digest}_data_en.xlsx"]
+
+    second = ci.ingest_dataset(FakeSession(routes), spec, settings, "run2")
+    assert second.downloaded == [] and len(second.skipped) == 1
+
+    routes[res["url"]] = FakeResponse(200, b"changed", XLSX)
+    third = ci.ingest_dataset(FakeSession(routes), spec, settings, "run3")
+    assert len(third.downloaded) == 1
+    assert len(ci.completed_files(ci.dataset_landing_dir(settings, spec))) == 2
+
+
+# ---------------------------------------------------------------------------
+# Multi-dataset runs, layout and logs
+# ---------------------------------------------------------------------------
+
+
+def test_run_isolates_datasets_and_continues_after_dataset_failure(settings):
+    ok_spec = make_spec("ok_ds")
+    # A distinct base_url, so the fake session can route it to a 504.
+    broken = make_spec("broken_ds", base_url="https://down.example/api/action")
+    res = make_resource("a")
+    routes = {api(ok_spec): metadata([res]),
+              res["url"]: FakeResponse(200, b"x", XLSX),
+              api(broken): GATEWAY_TIMEOUT}
+
+    run = ci.run_ingestion([broken, ok_spec], settings, FakeSession(routes), run_id="r1")
+    by_key = {d.key: d for d in run.datasets}
+    assert not run.ok
+    assert "no cache" in by_key["broken_ds"].error
+    assert by_key["ok_ds"].ok and by_key["ok_ds"].downloaded == ["a_data_en.xlsx"]
+    assert "FAIL broken_ds" in run.summary() and "OK   ok_ds" in run.summary()
+
+
+def test_files_land_under_source_and_key_and_log_is_written(settings):
+    spec = make_spec("lmia", source="open_canada")
+    res = make_resource("a")
+    routes = {api(spec): metadata([res]), res["url"]: FakeResponse(200, b"x", XLSX)}
+    ci.run_ingestion([spec], settings, FakeSession(routes), run_id="20261029T000000Z")
+
+    assert (Path(settings.landing_root) / "open_canada" / "lmia" / "a_data_en.xlsx").exists()
+    log_path = Path(settings.meta_root) / "open_canada" / "lmia" / "runs" / "20261029T000000Z.json"
+    log = json.loads(log_path.read_text())
+    assert log["report"]["downloaded"] == ["a_data_en.xlsx"]
+    assert log["spec"]["key"] == "lmia"
+
+
+def test_no_temp_files_left_and_meta_kept_out_of_landing(settings):
+    spec = make_spec()
+    res = make_resource("a")
+    routes = {api(spec): metadata([res]), res["url"]: FakeResponse(200, b"x", XLSX)}
+    ci.run_ingestion([spec], settings, FakeSession(routes), run_id="r1")
+
+    for dirpath, _dirs, files in os.walk(settings.landing_root):
+        assert not any(f.startswith(ci.TMP_PREFIX) for f in files)
+        assert not any(f.endswith(".json") for f in files)  # metadata stays in meta_root
+
+
+# ---------------------------------------------------------------------------
+# Optional live smoke test
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(os.environ.get("CKAN_LIVE_TEST") != "1", reason="set CKAN_LIVE_TEST=1")
+def test_live_lmia_metadata():
+    specs = ci.load_registry(str(ROOT / "config" / "datasets.yml"))
+    spec = next(s for s in specs if s.key == "lmia_positive_employers")
+    session = ci.build_session("mapledata.io pipeline test", total_retries=3, backoff_factor=2)
+    result = ci.fetch_metadata(session, spec, (10, 300))
+    assert ci.select_resources(result, spec)
