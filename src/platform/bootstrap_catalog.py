@@ -1,4 +1,8 @@
 # Databricks notebook source
+# /// script
+# [tool.databricks.environment]
+# environment_version = "6"
+# ///
 # MAGIC %md
 # MAGIC # Bootstrap the mapledata catalog
 # MAGIC Creates the catalog, schemas and volumes from zero. Safe to re-run: every
