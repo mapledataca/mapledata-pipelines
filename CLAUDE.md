@@ -48,6 +48,10 @@ All tests must pass before committing.
    `landing.raw` and `landing.meta`.
 7. **Comments and docs in English.** Update `docs/architecture.md` when a
    design decision changes.
+8. **Notebooks are source-format `.py`.** Write every Databricks notebook as a
+   `.py` file in Databricks source format (first line `# Databricks notebook source`,
+   `# MAGIC %md` for markdown, `# COMMAND ----------` between cells), like
+   `src/ingest/run_ingestion.py`. Do not create `.ipynb` files.
 
 ## Databricks guidance
 
