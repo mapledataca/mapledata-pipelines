@@ -49,7 +49,7 @@ SNAPSHOT_COLUMNS = (
     ("run_id", "STRING"),
     ("discovered_at", "TIMESTAMP"),
     ("base_url", "STRING"),
-    ("search_query", "STRING"),
+    ("search_queries", "ARRAY<STRING>"),
     ("ckan_id", "STRING"),
     ("name", "STRING"),
     ("title", "STRING"),

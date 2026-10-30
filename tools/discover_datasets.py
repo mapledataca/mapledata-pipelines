@@ -10,7 +10,10 @@
 # MAGIC Run `src/platform/bootstrap_catalog` first so the snapshot table exists.
 # MAGIC
 # MAGIC Widgets:
-# MAGIC - `query`: search text, e.g. `permanent residents`
+# MAGIC - `query`: comma-separated search keywords, e.g. `permanent residents, LMIA`.
+# MAGIC   Each keyword is searched in turn; a dataset found by several keywords is
+# MAGIC   recorded once, with all of them in `search_queries`. If any search fails,
+# MAGIC   the whole run fails and nothing is written.
 # MAGIC - `domain`: domain for the draft entries, e.g. `immigration`
 # MAGIC - `page_size`: results fetched per request
 # MAGIC - `base_url`: CKAN Action API base URL
@@ -43,15 +46,20 @@ sys.path.insert(0, str(root / "src" / "ingest"))
 import ckan_discover as cd
 import ckan_ingest as ci
 
-query = dbutils.widgets.get("query").strip()
-assert query, "Set the 'query' widget first."
+queries = cd.parse_queries(dbutils.widgets.get("query"))
+assert queries, "Set the 'query' widget first."
 base_url = dbutils.widgets.get("base_url")
 
 specs = ci.load_registry(str(root / "config" / "datasets.yml"))
 session = ci.build_session(dbutils.widgets.get("user_agent"))
-packages = cd.search_packages(
-    session, query, base_url=base_url, page_size=int(dbutils.widgets.get("page_size"))
+packages, matches = cd.search_many(
+    session, queries, base_url=base_url, page_size=int(dbutils.widgets.get("page_size"))
 )
+
+for query in queries:
+    found = sum(query in hit for hit in matches.values())
+    print(f"{query!r}: {found} datasets")
+print(f"{len(packages)} datasets after removing duplicates across keywords")
 
 # One timestamp and run id for the whole run, shared by every row.
 discovered_at = datetime.now(timezone.utc)
@@ -59,7 +67,7 @@ rows = cd.build_snapshot_rows(
     packages,
     specs,
     base_url,
-    query,
+    matches,
     discovered_at=discovered_at,
     run_id=ci._utc_run_id(lambda: discovered_at),
 )

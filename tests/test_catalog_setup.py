@@ -44,6 +44,8 @@ def test_snapshot_table_defines_every_column_with_its_type():
     for name, kind in cs.SNAPSHOT_COLUMNS:
         assert f"{name} {kind}" in table
     assert "run_id STRING" in table and "formats ARRAY<STRING>" in table
+    assert "search_queries ARRAY<STRING>" in table
+    assert "search_query STRING" not in table
 
 
 def test_current_view_keeps_latest_row_per_ckan_id():

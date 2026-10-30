@@ -63,14 +63,22 @@ unknown keys, duplicate keys, safe names, valid regex).
 
 ### Dataset discovery
 
-`tools/discover_datasets` searches a CKAN portal (all result pages) and
-appends one row per dataset to `metadata.ckan_dataset_snapshot`. Rows of one
-run share `run_id` and `discovered_at`; `is_registered` says whether
+`tools/discover_datasets` searches a CKAN portal with one or more
+comma-separated keywords (all result pages of each) and appends one row per
+dataset to `metadata.ckan_dataset_snapshot`. A dataset found by several
+keywords is recorded once per run, with all of them in `search_queries`. If
+any search fails, the run fails and writes nothing. Rows of one run (all
+keywords) share `run_id` and `discovered_at`; `is_registered` says whether
 `config/datasets.yml` already lists the dataset (matched by CKAN id or name,
 same portal, enabled or not). Rows are never deduplicated, so the table is a
 history; `metadata.ckan_dataset_current` keeps the newest row per `ckan_id`
 (`QUALIFY row_number()`). Discovery only prints draft registry entries; adding
 a dataset stays a manual, reviewed change to the registry.
+
+`CREATE TABLE IF NOT EXISTS` does not alter an existing table. While the
+snapshot table is in development, a schema change is applied by dropping the
+table (`DROP TABLE <catalog>.metadata.ckan_dataset_snapshot`) and re-running
+`bootstrap_catalog`; the history is disposable at this stage.
 
 ### Update patterns
 

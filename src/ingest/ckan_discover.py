@@ -29,7 +29,7 @@ SNAPSHOT_COLUMNS = (
     ("run_id", "STRING"),
     ("discovered_at", "TIMESTAMP"),
     ("base_url", "STRING"),
-    ("search_query", "STRING"),
+    ("search_queries", "ARRAY<STRING>"),
     ("ckan_id", "STRING"),
     ("name", "STRING"),
     ("title", "STRING"),
@@ -114,6 +114,62 @@ def search_packages(
         sleep(pause_seconds)
 
 
+def parse_queries(text: str) -> list:
+    """Keywords from a comma-separated string.
+
+    Whitespace is trimmed, empty items are dropped, and repeats (ignoring case)
+    keep their first spelling and position. Commas cannot be escaped.
+    """
+    queries, seen = [], set()
+    for item in text.split(","):
+        item = item.strip()
+        if item and item.lower() not in seen:
+            seen.add(item.lower())
+            queries.append(item)
+    return queries
+
+
+def search_many(
+    session: Any,
+    queries: Iterable,
+    base_url: str = ci.DEFAULT_BASE_URL,
+    page_size: int = 100,
+    timeout: tuple = (10, 60),
+    pause_seconds: float = 1.0,
+    sleep: Callable[[float], None] = time.sleep,
+) -> tuple:
+    """Search each keyword in turn and merge the results by ckan_id.
+
+    Returns (packages, matches): packages holds each dataset once, with the
+    content of the first search that found it; matches maps ckan_id to the
+    keywords that found it, in keyword order.
+
+    Any failing search raises, so a run never yields partial results.
+
+    Raises:
+        ValueError: no keywords given.
+        ci.UpstreamError, requests.RequestException: see search_packages.
+    """
+    queries = list(queries)
+    if not queries:
+        raise ValueError("at least one search keyword is required")
+
+    packages, matches = [], {}
+    for index, query in enumerate(queries):
+        if index:
+            sleep(pause_seconds)
+        for package in search_packages(
+            session, query, base_url, page_size, timeout, pause_seconds, sleep
+        ):
+            ckan_id = package.get("id")
+            if ckan_id not in matches:
+                matches[ckan_id] = []
+                packages.append(package)
+            if query not in matches[ckan_id]:
+                matches[ckan_id].append(query)
+    return packages, matches
+
+
 # ---------------------------------------------------------------------------
 # Field extraction
 # ---------------------------------------------------------------------------
@@ -189,13 +245,14 @@ def build_snapshot_rows(
     packages: Iterable,
     specs: Iterable,
     base_url: str,
-    query: str,
+    matches: dict,
     discovered_at: datetime,
     run_id: str,
 ) -> list:
     """One dict per package, keyed by SNAPSHOT_COLUMNS.
 
-    Every row of a call shares discovered_at and run_id.
+    matches maps ckan_id to the keywords that found the package (see
+    search_many). Every row of a call shares discovered_at and run_id.
     """
     registered = registered_ids(specs, base_url)
     rows = []
@@ -206,7 +263,7 @@ def build_snapshot_rows(
                 "run_id": run_id,
                 "discovered_at": discovered_at,
                 "base_url": base_url,
-                "search_query": query,
+                "search_queries": list(matches.get(package.get("id"), [])),
                 "ckan_id": package.get("id", ""),
                 "name": package.get("name", ""),
                 "title": package_title(package),

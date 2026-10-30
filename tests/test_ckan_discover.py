@@ -214,7 +214,7 @@ def test_parse_date(value, expected):
 
 
 def test_snapshot_row_has_frequency_and_coverage_or_none():
-    (row,) = cd.build_snapshot_rows([make_package()], [], BASE, "q", NOW, RUN_ID)
+    (row,) = cd.build_snapshot_rows([make_package()], [], BASE, {}, NOW, RUN_ID)
     assert row["frequency"] == "P1Y"
     assert (row["coverage_start"], row["coverage_end"]) == (
         date(2015, 1, 1),
@@ -224,7 +224,7 @@ def test_snapshot_row_has_frequency_and_coverage_or_none():
     bare = make_package(frequency=None)
     for key in ("time_period_coverage_start", "time_period_coverage_end"):
         del bare[key]
-    (row,) = cd.build_snapshot_rows([bare], [], BASE, "q", NOW, RUN_ID)
+    (row,) = cd.build_snapshot_rows([bare], [], BASE, {}, NOW, RUN_ID)
     assert (row["frequency"], row["coverage_start"], row["coverage_end"]) == (
         None,
         None,
@@ -258,7 +258,7 @@ def test_snapshot_rows_flag_registered_packages():
         [make_package(1), make_package(2), make_package(3)],
         specs,
         BASE,
-        "q",
+        {},
         NOW,
         RUN_ID,
     )
@@ -270,15 +270,125 @@ def test_snapshot_rows_flag_registered_packages():
 
 def test_snapshot_rows_share_run_id_and_timestamp_and_match_schema():
     rows = cd.build_snapshot_rows(
-        [make_package(1), make_package(2)], [], BASE, "lmia", NOW, RUN_ID
+        [make_package(1), make_package(2)],
+        [],
+        BASE,
+        {"id-1": ["lmia"], "id-2": ["lmia", "employers"]},
+        NOW,
+        RUN_ID,
     )
     assert {r["run_id"] for r in rows} == {RUN_ID}
     assert {r["discovered_at"] for r in rows} == {NOW}
     columns = [name for name, _ in cd.SNAPSHOT_COLUMNS]
     assert all(list(r) == columns for r in rows)
+    assert "search_query" not in columns and "search_queries" in columns
     assert cd.SNAPSHOT_SCHEMA_DDL.startswith("run_id STRING, discovered_at TIMESTAMP")
-    assert rows[0]["search_query"] == "lmia" and rows[0]["base_url"] == BASE
+    assert "search_queries ARRAY<STRING>" in cd.SNAPSHOT_SCHEMA_DDL
+    assert rows[0]["base_url"] == BASE
     assert rows[0]["resource_count"] == 4 and rows[0]["formats"] == ["CSV", "XLSX"]
+
+
+# --- multiple keywords --------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ("lmia", ["lmia"]),
+        ("permanent residents, LMIA", ["permanent residents", "LMIA"]),
+        ("  a ,, b ,  ", ["a", "b"]),
+        ("LMIA, lmia, Lmia, study", ["LMIA", "study"]),
+        ("", []),
+        (" , ,", []),
+    ],
+)
+def test_parse_queries(text, expected):
+    assert cd.parse_queries(text) == expected
+
+
+class KeywordSession:
+    """Serves a separate result list per keyword; a keyword can fail instead."""
+
+    def __init__(self, catalogs, failing=()):
+        self.catalogs = catalogs
+        self.failing = set(failing)
+        self.requests = []
+
+    def get(self, url, params=None, timeout=None):
+        self.requests.append(params["q"])
+        if params["q"] in self.failing:
+            return FakeResponse(504, content_type="text/html")
+        found = self.catalogs[params["q"]]
+        page = found[params["start"] : params["start"] + params["rows"]]
+        return FakeResponse(
+            payload={"success": True, "result": {"count": len(found), "results": page}}
+        )
+
+
+def test_search_many_searches_every_keyword_and_pages_each():
+    session = KeywordSession(
+        {"a": [make_package(n) for n in range(3)], "b": [make_package(10)]}
+    )
+    packages, _ = cd.search_many(
+        session, ["a", "b"], BASE, page_size=2, sleep=no_sleep
+    )
+    assert session.requests == ["a", "a", "b"]  # "a" needs two pages
+    assert [p["id"] for p in packages] == ["id-0", "id-1", "id-2", "id-10"]
+
+
+def test_search_many_dedupes_by_ckan_id_and_records_every_keyword():
+    session = KeywordSession(
+        {
+            "a": [make_package(1), make_package(2)],
+            "b": [make_package(2, title_translated={"en": "Changed"}), make_package(3)],
+            "c": [make_package(2)],
+        }
+    )
+    packages, matches = cd.search_many(session, ["a", "b", "c"], BASE, sleep=no_sleep)
+
+    assert [p["id"] for p in packages] == ["id-1", "id-2", "id-3"]
+    assert matches == {"id-1": ["a"], "id-2": ["a", "b", "c"], "id-3": ["b"]}
+    # The first search that found a dataset supplies its content.
+    assert cd.package_title(packages[1]) == "TFWP Positive LMIA Employers"
+
+
+def test_search_many_pauses_between_keywords():
+    pauses = []
+    session = KeywordSession({"a": [make_package(1)], "b": [make_package(2)]})
+    cd.search_many(session, ["a", "b"], BASE, pause_seconds=2.0, sleep=pauses.append)
+    assert pauses == [2.0]  # one gap between two single-page searches
+
+
+def test_search_many_fails_whole_run_when_any_keyword_fails():
+    session = KeywordSession(
+        {"a": [make_package(1)], "b": [], "c": [make_package(3)]}, failing=["b"]
+    )
+    with pytest.raises(ci.UpstreamError):
+        cd.search_many(session, ["a", "b", "c"], BASE, sleep=no_sleep)
+    assert "c" not in session.requests  # stopped at the failure
+
+
+def test_search_many_requires_a_keyword():
+    with pytest.raises(ValueError):
+        cd.search_many(KeywordSession({}), [], BASE, sleep=no_sleep)
+
+
+def test_multi_keyword_run_yields_one_row_per_dataset_sharing_run_values():
+    session = KeywordSession(
+        {"a": [make_package(1), make_package(2)], "b": [make_package(2), make_package(3)]}
+    )
+    packages, matches = cd.search_many(session, ["a", "b"], BASE, sleep=no_sleep)
+    rows = cd.build_snapshot_rows(packages, [], BASE, matches, NOW, RUN_ID)
+
+    assert [r["ckan_id"] for r in rows] == ["id-1", "id-2", "id-3"]
+    assert [r["search_queries"] for r in rows] == [["a"], ["a", "b"], ["b"]]
+    assert {r["run_id"] for r in rows} == {RUN_ID}
+    assert {r["discovered_at"] for r in rows} == {NOW}
+
+
+def test_row_without_matches_gets_empty_search_queries():
+    (row,) = cd.build_snapshot_rows([make_package(1)], [], BASE, {}, NOW, RUN_ID)
+    assert row["search_queries"] == []
 
 
 # --- drafts -------------------------------------------------------------------
