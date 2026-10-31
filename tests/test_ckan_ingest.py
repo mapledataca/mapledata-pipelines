@@ -85,10 +85,20 @@ def make_spec(key="ds_a", pattern=ci.NEW_FILE, **overrides):
         domain="immigration",
         ckan_id=f"{key}-id",
         update_pattern=pattern,
+        status=ci.STATUS_ACTIVE,
+        purpose="test purpose",
         base_url="https://ckan.example/api/action",
     )
     values.update(overrides)
     return ci.DatasetSpec(**values)
+
+
+def make_entry(**overrides):
+    """A valid raw registry entry (as parsed from YAML)."""
+    entry = {"key": "a", "domain": "d", "ckan_id": "x", "update_pattern": ci.NEW_FILE,
+             "status": "active", "purpose": "why"}
+    entry.update(overrides)
+    return entry
 
 
 def make_resource(rid, lang="en", fmt="XLSX", name=None, created="2024-01-01",
@@ -135,10 +145,7 @@ def settings(tmp_path):
 def test_parse_registry_applies_defaults_and_normalises_lists():
     raw = {
         "defaults": {"languages": ["en", "fr"], "source": "open_canada"},
-        "datasets": [
-            {"key": "a", "domain": "housing", "ckan_id": "x",
-             "update_pattern": ci.NEW_FILE, "formats": ["csv", "xlsx"]}
-        ],
+        "datasets": [make_entry(domain="housing", formats=["csv", "xlsx"])],
     }
     (spec,) = ci.parse_registry(raw)
     assert spec.languages == ("en", "fr")
@@ -149,8 +156,7 @@ def test_parse_registry_applies_defaults_and_normalises_lists():
 def test_parse_registry_entry_overrides_defaults():
     raw = {
         "defaults": {"languages": ["en"]},
-        "datasets": [{"key": "a", "domain": "d", "ckan_id": "x",
-                      "update_pattern": ci.NEW_FILE, "languages": ["fr"]}],
+        "datasets": [make_entry(languages=["fr"])],
     }
     assert ci.parse_registry(raw)[0].languages == ("fr",)
 
@@ -158,15 +164,16 @@ def test_parse_registry_entry_overrides_defaults():
 @pytest.mark.parametrize(
     "entry, message",
     [
-        ({"key": "a", "domain": "d", "update_pattern": ci.NEW_FILE}, "missing"),
-        ({"key": "a", "domain": "d", "ckan_id": "x", "update_pattern": "weekly"},
-         "update_pattern"),
-        ({"key": "a", "domain": "d", "ckan_id": "x", "update_pattern": ci.NEW_FILE,
-          "colour": "red"}, "unknown keys"),
-        ({"key": "Bad Key", "domain": "d", "ckan_id": "x",
-          "update_pattern": ci.NEW_FILE}, "must match"),
-        ({"key": "a", "domain": "d", "ckan_id": "x", "update_pattern": ci.NEW_FILE,
-          "name_regex": "("}, "invalid name_regex"),
+        (make_entry(ckan_id=""), "missing"),
+        (make_entry(update_pattern="weekly"), "update_pattern"),
+        (make_entry(colour="red"), "unknown keys"),
+        (make_entry(key="Bad Key"), "must match"),
+        (make_entry(name_regex="("), "invalid name_regex"),
+        (make_entry(status=""), "missing"),
+        (make_entry(status="paused"), "status must be one of"),
+        (make_entry(purpose=""), "missing"),
+        (make_entry(purpose="   "), "purpose must be a non-empty string"),
+        (make_entry(purpose=42), "purpose must be a non-empty string"),
     ],
 )
 def test_parse_registry_rejects_invalid_entries(entry, message):
@@ -174,10 +181,81 @@ def test_parse_registry_rejects_invalid_entries(entry, message):
         ci.parse_registry({"datasets": [entry]})
 
 
+def test_parse_registry_requires_status_and_purpose_keys():
+    for key in ("status", "purpose"):
+        entry = make_entry()
+        del entry[key]
+        with pytest.raises(ci.RegistryError, match=f"missing required keys.*{key}"):
+            ci.parse_registry({"datasets": [entry]})
+
+
+@pytest.mark.parametrize("status", ci.STATUSES)
+def test_parse_registry_accepts_every_status_and_trims_purpose(status):
+    (spec,) = ci.parse_registry(
+        {"datasets": [make_entry(status=status, purpose="  Why we need it.  ")]}
+    )
+    assert spec.status == status
+    assert spec.purpose == "Why we need it."
+
+
+def test_parse_registry_rejects_legacy_enabled_and_says_what_to_write():
+    with pytest.raises(ci.RegistryError) as excinfo:
+        ci.parse_registry({"datasets": [make_entry(enabled=False)]})
+    message = str(excinfo.value)
+    assert "'enabled' was replaced by 'status'" in message
+    assert "'status: active' (or 'candidate' / 'deprecated')" in message
+
+
+@pytest.mark.parametrize("purpose", ["TODO", "TODO: why this dataset", "  TODO: padded"])
+def test_parse_registry_rejects_todo_purpose_on_active_entry(purpose):
+    with pytest.raises(ci.RegistryError, match="active entry needs a real purpose"):
+        ci.parse_registry(
+            {"datasets": [make_entry(status=ci.STATUS_ACTIVE, purpose=purpose)]}
+        )
+
+
+@pytest.mark.parametrize("status", [ci.STATUS_CANDIDATE, ci.STATUS_DEPRECATED])
+def test_parse_registry_allows_todo_purpose_on_other_statuses(status):
+    (spec,) = ci.parse_registry(
+        {"datasets": [make_entry(status=status, purpose="  TODO: fill in")]}
+    )
+    assert spec.purpose == "TODO: fill in"
+
+
+def test_parse_registry_allows_active_purpose_that_only_mentions_todo():
+    # Only a leading TODO marks a placeholder.
+    (spec,) = ci.parse_registry(
+        {"datasets": [make_entry(purpose="Replaces the old TODO list of employers")]}
+    )
+    assert spec.status == ci.STATUS_ACTIVE
+
+
 def test_parse_registry_rejects_duplicate_keys():
-    entry = {"key": "a", "domain": "d", "ckan_id": "x", "update_pattern": ci.NEW_FILE}
-    with pytest.raises(ci.RegistryError, match="duplicate"):
-        ci.parse_registry({"datasets": [entry, dict(entry)]})
+    entries = [make_entry(), make_entry(ckan_id="y")]
+    with pytest.raises(ci.RegistryError, match="duplicate key"):
+        ci.parse_registry({"datasets": entries})
+
+
+def test_parse_registry_rejects_duplicate_ckan_id_on_same_portal():
+    entries = [make_entry(key="a"), make_entry(key="b")]
+    with pytest.raises(ci.RegistryError, match="duplicate ckan_id 'x'"):
+        ci.parse_registry({"datasets": entries})
+
+    # A trailing slash is the same portal.
+    entries = [
+        make_entry(key="a", base_url="https://p.example/api/action"),
+        make_entry(key="b", base_url="https://p.example/api/action/"),
+    ]
+    with pytest.raises(ci.RegistryError, match="duplicate ckan_id"):
+        ci.parse_registry({"datasets": entries})
+
+
+def test_parse_registry_allows_same_ckan_id_on_different_portals():
+    entries = [
+        make_entry(key="a", base_url="https://one.example/api/action"),
+        make_entry(key="b", base_url="https://two.example/api/action"),
+    ]
+    assert [s.key for s in ci.parse_registry({"datasets": entries})] == ["a", "b"]
 
 
 def test_shipped_registry_file_is_valid():
@@ -186,15 +264,33 @@ def test_shipped_registry_file_is_valid():
     keys = [s.key for s in specs]
     assert "lmia_positive_employers" in keys
     assert len(keys) == len(set(keys))
+    assert all(s.purpose for s in specs)
+    # Existing landing paths and lineage depend on this key staying unchanged.
+    lmia = next(s for s in specs if s.key == "lmia_positive_employers")
+    assert lmia.status == ci.STATUS_ACTIVE
+    assert lmia.update_pattern == ci.NEW_FILE
 
 
-def test_select_specs_filters_enabled_domain_and_key():
+def test_shipped_registry_ingests_only_active_entries():
+    specs = ci.load_registry(str(ROOT / "config" / "datasets.yml"))
+    selected = ci.select_specs(specs)
+    assert selected and all(s.status == ci.STATUS_ACTIVE for s in selected)
+    assert {s.status for s in specs} >= {ci.STATUS_ACTIVE, ci.STATUS_CANDIDATE}
+    # Registered but not ingested: candidates are skipped.
+    assert not {s.key for s in specs if s.status == ci.STATUS_CANDIDATE} & {
+        s.key for s in selected
+    }
+
+
+def test_select_specs_runs_only_active_and_filters_domain_and_key():
     specs = [
         make_spec("a", domain="immigration"),
         make_spec("b", domain="housing"),
-        make_spec("c", domain="immigration", enabled=False),
+        make_spec("c", domain="immigration", status=ci.STATUS_CANDIDATE),
+        make_spec("d", domain="immigration", status=ci.STATUS_DEPRECATED),
     ]
     assert [s.key for s in ci.select_specs(specs)] == ["a", "b"]
+    assert [s.key for s in ci.select_specs(specs, keys=["c", "d"])] == []
     assert [s.key for s in ci.select_specs(specs, domains=["housing"])] == ["b"]
     assert [s.key for s in ci.select_specs(specs, keys=["a"])] == ["a"]
 

@@ -3,7 +3,7 @@
 # MAGIC # Run CKAN ingestion
 # MAGIC Reads `config/datasets.yml` and downloads new files into the landing volume.
 # MAGIC Use as a notebook task in a Lakeflow Job. Parameters (job or widgets):
-# MAGIC - `domains`: comma-separated domains to run, empty = all enabled datasets
+# MAGIC - `domains`: comma-separated domains to run, empty = all active datasets
 # MAGIC - `keys`: comma-separated dataset keys, empty = all
 # MAGIC - `landing_root`, `meta_root`: volume paths
 

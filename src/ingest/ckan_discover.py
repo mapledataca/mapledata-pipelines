@@ -226,7 +226,7 @@ def slugify_key(title: str) -> str:
 
 
 def registered_ids(specs: Iterable, base_url: str) -> set:
-    """ckan_id values of every registry entry (enabled or not) for this portal."""
+    """ckan_id values of every registry entry (any status) for this portal."""
     wanted = base_url.rstrip("/")
     return {s.ckan_id for s in specs if s.base_url.rstrip("/") == wanted}
 
@@ -291,7 +291,8 @@ def registry_entry_yaml(package: dict, domain: str) -> str:
 
     update_pattern cannot be inferred from metadata, so the draft uses
     new_file_per_period and flags it for review. Check the publisher's
-    behaviour (are files replaced in place?) before enabling the dataset.
+    behaviour (are files replaced in place?) before making the dataset active.
+    The draft is a candidate with a placeholder purpose to fill in.
     """
     formats = ", ".join(package_formats(package))
     lines = [
@@ -302,7 +303,8 @@ def registry_entry_yaml(package: dict, domain: str) -> str:
     ]
     if formats:
         lines.append(f"    formats: [{formats}]")
-    lines.append("    enabled: false  # enable after the first successful run")
+    lines.append("    status: candidate  # active = ingested; set after reviewing")
+    lines.append('    purpose: "TODO: why this dataset, where it will be used"')
     # A JSON string is also a valid YAML double-quoted scalar.
     lines.append(
         f"    description: {json.dumps(package_title(package), ensure_ascii=False)}"

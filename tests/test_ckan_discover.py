@@ -82,14 +82,15 @@ def make_package(n=1, **overrides):
     return package
 
 
-def make_spec(ckan_id, base_url=BASE, enabled=True):
+def make_spec(ckan_id, base_url=BASE, status=ci.STATUS_ACTIVE):
     return ci.DatasetSpec(
         key="ds",
         domain="immigration",
         ckan_id=ckan_id,
         update_pattern=ci.NEW_FILE,
+        status=status,
+        purpose="test purpose",
         base_url=base_url,
-        enabled=enabled,
     )
 
 
@@ -235,13 +236,22 @@ def test_snapshot_row_has_frequency_and_coverage_or_none():
 # --- 5. is_registered --------------------------------------------------------
 
 
-def test_registered_ids_cover_disabled_entries_and_same_portal_only():
+def test_registered_ids_cover_every_status_and_same_portal_only():
     specs = [
         make_spec("id-1"),
-        make_spec("id-2", enabled=False),
+        make_spec("id-2", status=ci.STATUS_CANDIDATE),
+        make_spec("id-3", status=ci.STATUS_DEPRECATED),
         make_spec("other-portal-id", base_url="https://other.example/api/action"),
     ]
-    assert cd.registered_ids(specs, BASE + "/") == {"id-1", "id-2"}
+    assert cd.registered_ids(specs, BASE + "/") == {"id-1", "id-2", "id-3"}
+
+
+@pytest.mark.parametrize("status", ci.STATUSES)
+def test_snapshot_marks_registered_whatever_the_status(status):
+    (row,) = cd.build_snapshot_rows(
+        [make_package(1)], [make_spec("id-1", status=status)], BASE, {}, NOW, RUN_ID
+    )
+    assert row["is_registered"] is True
 
 
 def test_is_registered_matches_id_or_name():
@@ -417,7 +427,8 @@ def test_registry_entry_yaml_is_accepted_by_parse_registry():
     assert spec.domain == "immigration"
     assert spec.ckan_id == package["id"]
     assert spec.formats == ("CSV", "XLSX")
-    assert spec.enabled is False
+    assert spec.status == ci.STATUS_CANDIDATE
+    assert spec.purpose.startswith("TODO")  # placeholder for the reviewer to replace
     assert spec.description == 'Employers: "LMIA" list'
 
 

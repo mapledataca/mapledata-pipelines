@@ -68,6 +68,12 @@ NEW_FILE = "new_file_per_period"
 OVERWRITE = "overwrite_in_place"
 UPDATE_PATTERNS = (NEW_FILE, OVERWRITE)
 
+#: Allowed values for DatasetSpec.status. Only ACTIVE entries are ingested.
+STATUS_CANDIDATE = "candidate"
+STATUS_ACTIVE = "active"
+STATUS_DEPRECATED = "deprecated"
+STATUSES = (STATUS_CANDIDATE, STATUS_ACTIVE, STATUS_DEPRECATED)
+
 #: Prefix for temporary files. Spark file sources (including Auto Loader)
 #: ignore names starting with "_" or ".", so partial downloads stay invisible.
 TMP_PREFIX = "_tmp_"
@@ -76,7 +82,7 @@ TMP_PREFIX = "_tmp_"
 RETRYABLE_STATUS = (429, 500, 502, 503, 504)
 
 #: Keys every registry entry must define.
-REQUIRED_KEYS = ("key", "domain", "ckan_id", "update_pattern")
+REQUIRED_KEYS = ("key", "domain", "ckan_id", "update_pattern", "status", "purpose")
 
 #: Registry keys become folder names, so restrict them to safe characters.
 _SAFE_NAME = re.compile(r"^[a-z0-9][a-z0-9_]*$")
@@ -110,14 +116,17 @@ class DatasetSpec:
         domain:         Business domain, e.g. "immigration", "housing".
         ckan_id:        CKAN dataset id (or name) on the portal.
         update_pattern: NEW_FILE or OVERWRITE (see module docstring).
-        source:         Folder-safe name of the portal, e.g. "open_canada".
+        status:         STATUS_CANDIDATE (registered, not ingested),
+                        STATUS_ACTIVE (ingested) or STATUS_DEPRECATED
+                        (kept for the record, not ingested).
+        purpose:        Why the dataset is wanted and where it will be used.
+        source:        Folder-safe name of the portal, e.g. "open_canada".
         base_url:       CKAN Action API base URL (".../api/action").
         languages:      Keep resources tagged with any of these languages.
         formats:        Optional allow-list of CKAN formats (upper-case),
                         e.g. ("CSV", "XLSX"). None keeps every format.
         name_regex:     Optional regex; keep resources whose English name
                         matches it (case-insensitive search).
-        enabled:        False keeps the entry in the registry but skips it.
         description:    Free text for humans.
     """
 
@@ -125,12 +134,13 @@ class DatasetSpec:
     domain: str
     ckan_id: str
     update_pattern: str
+    status: str
+    purpose: str
     source: str = "open_canada"
     base_url: str = DEFAULT_BASE_URL
     languages: tuple = ("en",)
     formats: Optional[tuple] = None
     name_regex: Optional[str] = None
-    enabled: bool = True
     description: str = ""
 
     @property
@@ -222,7 +232,7 @@ def parse_registry(raw: dict) -> list:
 
     defaults = raw.get("defaults") or {}
     allowed = set(DatasetSpec.__dataclass_fields__)
-    specs, seen = [], set()
+    specs, seen, seen_ids = [], set(), set()
 
     for index, entry in enumerate(raw["datasets"]):
         if not isinstance(entry, dict):
@@ -230,6 +240,13 @@ def parse_registry(raw: dict) -> list:
 
         merged = {**defaults, **entry}  # entry values override defaults
         where = f"datasets[{index}] ({merged.get('key', '?')})"
+
+        # Say what to write instead of reporting a generic unknown key.
+        if "enabled" in merged:
+            raise RegistryError(
+                f"{where}: 'enabled' was replaced by 'status'; use "
+                f"'status: active' (or 'candidate' / 'deprecated')"
+            )
 
         missing = [k for k in REQUIRED_KEYS if not merged.get(k)]
         if missing:
@@ -251,9 +268,31 @@ def parse_registry(raw: dict) -> list:
                 f"{where}: update_pattern must be one of {UPDATE_PATTERNS}"
             )
 
+        if merged["status"] not in STATUSES:
+            raise RegistryError(f"{where}: status must be one of {STATUSES}")
+
+        if not isinstance(merged["purpose"], str) or not merged["purpose"].strip():
+            raise RegistryError(f"{where}: purpose must be a non-empty string")
+        merged["purpose"] = merged["purpose"].strip()
+        # Discovery drafts carry a "TODO" purpose; it must be replaced before
+        # an entry can be ingested. Candidates and deprecated entries may keep it.
+        if merged["status"] == STATUS_ACTIVE and merged["purpose"].startswith("TODO"):
+            raise RegistryError(
+                f"{where}: an active entry needs a real purpose, not a TODO placeholder"
+            )
+
         if merged["key"] in seen:
             raise RegistryError(f"{where}: duplicate key '{merged['key']}'")
         seen.add(merged["key"])
+
+        # The same dataset registered twice would be ingested twice.
+        portal_id = (
+            str(merged.get("base_url", DEFAULT_BASE_URL)).rstrip("/"),
+            merged["ckan_id"],
+        )
+        if portal_id in seen_ids:
+            raise RegistryError(f"{where}: duplicate ckan_id '{merged['ckan_id']}'")
+        seen_ids.add(portal_id)
 
         if merged.get("name_regex"):
             try:
@@ -283,13 +322,13 @@ def load_registry(path: str) -> list:
 def select_specs(
     specs: Iterable, domains: Optional[Iterable] = None, keys: Optional[Iterable] = None
 ) -> list:
-    """Return enabled specs, optionally restricted to some domains and/or keys."""
+    """Return active specs, optionally restricted to some domains and/or keys."""
     domains = set(domains) if domains else None
     keys = set(keys) if keys else None
     return [
         s
         for s in specs
-        if s.enabled
+        if s.status == STATUS_ACTIVE
         and (domains is None or s.domain in domains)
         and (keys is None or s.key in keys)
     ]
@@ -623,7 +662,7 @@ def run_ingestion(
     keys: Optional[Iterable] = None,
     run_id: Optional[str] = None,
 ) -> RunReport:
-    """Ingest all enabled specs (optionally filtered by domain/key).
+    """Ingest all active specs (optionally filtered by domain/key).
 
     One failing dataset never stops the others; check RunReport.ok afterwards
     and fail the job if needed so that job-level retries can kick in.

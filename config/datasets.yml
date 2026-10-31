@@ -2,9 +2,17 @@
 #
 # Each entry describes one CKAN dataset. Adding a dataset = adding an entry.
 #
-# Required keys:  key, domain, ckan_id, update_pattern
-# Optional keys:  source, base_url, languages, formats, name_regex,
-#                 enabled, description
+# Required keys:  key, domain, ckan_id, update_pattern, status, purpose
+# Optional keys:  source, base_url, languages, formats, name_regex, description
+#
+# status:
+#   candidate   registered but not ingested yet (under evaluation)
+#   active      ingested by run_ingestion
+#   deprecated  kept for the record, no longer ingested
+# Discovery (tools/discover_datasets) treats an entry of any status as registered.
+#
+# purpose: why the dataset is wanted and where it will be used. An active entry
+# must not start with "TODO" (the placeholder discovery writes into drafts).
 #
 # update_pattern:
 #   new_file_per_period  publisher adds a new file each period
@@ -17,31 +25,182 @@ defaults:
   languages: [en]
 
 datasets:
-  # --- Immigration ---------------------------------------------------------
+  # --- Immigration: active -------------------------------------------------
   - key: lmia_positive_employers
     domain: immigration
     ckan_id: 90fed587-1364-4f33-a9ee-208181dc0b97
     update_pattern: new_file_per_period
+    status: active
+    purpose: >
+      Employers issued positive LMIAs under the Temporary Foreign Worker
+      Program: which employers and sectors recruit foreign workers in each
+      province. Feeds the labour-demand metrics of the immigration domain.
     formats: [CSV, XLSX, XLS]
     description: >
       ESDC TFWP Positive LMIA Employers List. Quarterly; one new file per
       quarter. CSV until 2020Q3, XLSX afterwards.
 
+  - key: esdc_lmia_negative_employers
+    domain: immigration
+    ckan_id: f82f66f2-a22b-4511-bccf-e1d74db39ae5
+    update_pattern: new_file_per_period
+    status: active
+    purpose: >
+      Employers refused LMIAs: the counterpart of the positive list, giving
+      approval-versus-refusal context by province.
+    formats: [CSV, XLSX, XLS]
+    description: >
+      ESDC TFWP Negative LMIA Employers List. Quarterly. update_pattern to be
+      confirmed after the first ingestion, from the resources' last_modified.
+
+  - key: esdc_lmia_statistics_quarterly
+    domain: immigration
+    ckan_id: e8745429-21e7-4a73-b3f5-90a779b78d1e
+    update_pattern: overwrite_in_place
+    status: active
+    purpose: >
+      Quarterly LMIA statistics (positions, program streams, occupations,
+      province): recent provincial trends in temporary foreign worker demand,
+      including Manitoba.
+    formats: [CSV]
+    description: >
+      ESDC TFWP LMIA Statistics, quarterly tables. update_pattern to be
+      confirmed after the first ingestion, from the resources' last_modified.
+
+  - key: esdc_lmia_statistics_annual
+    domain: immigration
+    ckan_id: 76defa14-473e-41e2-abfa-60021c4d934b
+    update_pattern: overwrite_in_place
+    status: active
+    purpose: >
+      Annual LMIA statistics tables: longer history (from 2016) to complement
+      the quarterly tables.
+    formats: [CSV]
+    description: >
+      ESDC TFWP LMIA Statistics, annual tables. update_pattern to be confirmed
+      after the first ingestion, from the resources' last_modified.
+
   - key: ircc_permanent_residents_monthly
     domain: immigration
     ckan_id: f7e5498e-0ad8-4417-85c9-9b8aff9b9eda
     update_pattern: overwrite_in_place
-    # Restrict to the province/territory x immigration category table.
-    # VERIFY the exact resource name after the first metadata fetch
-    # (inspect package_show.json in the meta folder), then adjust if needed.
-    name_regex: "Province/Territory and Immigration Category"
+    status: active
+    purpose: >
+      Permanent residents by province/territory, immigration category and
+      country of citizenship: the core metrics on who immigrates to Manitoba
+      and from where.
+    formats: [CSV]
     description: >
-      IRCC Permanent Residents - Monthly IRCC Updates. Assumed to be updated
-      in place monthly; check resource last_modified to confirm.
+      IRCC Permanent Residents - Monthly IRCC Updates. Every CSV table is
+      ingested (no name filter). update_pattern to be confirmed after the first
+      ingestion, from the resources' last_modified.
 
   - key: ircc_study_permit_holders_monthly
     domain: immigration
     ckan_id: 90115b00-f9b8-49e8-afa3-b4cff8facaee
     update_pattern: overwrite_in_place
-    enabled: false   # turn on after the PR dataset works end to end
-    description: IRCC Temporary Residents - Study Permit Holders (monthly).
+    status: active
+    purpose: >
+      Study permit holders by province, study level and country of
+      citizenship: international student numbers for Manitoba.
+    formats: [CSV]
+    description: >
+      IRCC Temporary Residents - Study Permit Holders (monthly).
+      update_pattern to be confirmed after the first ingestion, from the
+      resources' last_modified.
+
+  - key: ircc_work_permit_holders_monthly
+    domain: immigration
+    ckan_id: 360024f2-17e9-4558-bfc1-3616485d65b9
+    update_pattern: overwrite_in_place
+    status: active
+    purpose: >
+      TFWP and International Mobility Program work permit holders by province,
+      occupational skill level and country: temporary workers in Manitoba.
+    formats: [CSV]
+    description: >
+      IRCC Temporary Residents - Work Permit Holders (monthly).
+      update_pattern to be confirmed after the first ingestion, from the
+      resources' last_modified.
+
+  - key: ircc_tr_to_pr_transition_monthly
+    domain: immigration
+    ckan_id: 1b026aab-edb3-4d5d-8231-270a09ed4e82
+    update_pattern: overwrite_in_place
+    status: active
+    purpose: >
+      Permanent residents with prior study or work permit status, by province
+      and category: the pathways from temporary to permanent residence.
+    formats: [CSV]
+    description: >
+      IRCC Transition from Temporary Resident to Permanent Resident Status
+      (monthly). update_pattern to be confirmed after the first ingestion,
+      from the resources' last_modified.
+
+  # --- Immigration: candidate (registered, not ingested yet) ---------------
+  - key: ircc_asylum_claimants_monthly
+    domain: immigration
+    ckan_id: b6cbcf4d-f763-4924-a2fb-8cc4a06e3de4
+    update_pattern: overwrite_in_place
+    status: candidate
+    purpose: >
+      Asylum claimants by province and country: evaluate once the core
+      immigration datasets work end to end.
+    formats: [CSV]
+    description: >
+      IRCC Asylum Claimants (monthly). update_pattern to be confirmed after
+      the first ingestion, from the resources' last_modified.
+
+  - key: irb_rpd_decisions
+    domain: immigration
+    ckan_id: 6e47f705-71ed-41f0-8fd5-d1a8508a3b63
+    update_pattern: new_file_per_period
+    status: candidate
+    purpose: >
+      Refugee Protection Division decisions: refugee protection outcomes;
+      evaluate whether they add provincial insight.
+    formats: [CSV]
+    description: >
+      Immigration and Refugee Board RPD Decisions (quarterly), published on
+      open.canada.ca. update_pattern to be confirmed after the first
+      ingestion, from the resources' last_modified.
+
+  - key: ircc_express_entry_pr_monthly
+    domain: immigration
+    ckan_id: 52e4b14b-597a-4ecf-a184-23a6e69b0d57
+    update_pattern: overwrite_in_place
+    status: candidate
+    purpose: >
+      Permanent residents admitted through Express Entry, by province and
+      category: evaluate as a pathway breakdown of permanent residence.
+    formats: [CSV]
+    description: >
+      IRCC Express Entry Permanent Residents (monthly). update_pattern to be
+      confirmed after the first ingestion, from the resources' last_modified.
+
+  - key: ircc_express_entry_invitations_monthly
+    domain: immigration
+    ckan_id: 593e9165-c6ce-4f9b-b519-03d315f92cd4
+    update_pattern: overwrite_in_place
+    status: candidate
+    purpose: >
+      Express Entry candidates invited, by province, category and score:
+      evaluate as a leading indicator of permanent residence.
+    formats: [CSV]
+    description: >
+      IRCC Express Entry-Invited Candidates (monthly). update_pattern to be
+      confirmed after the first ingestion, from the resources' last_modified.
+
+  - key: ircc_glossaries
+    domain: immigration
+    ckan_id: 17f69360-123a-4bd2-8eef-bba94468071f
+    update_pattern: overwrite_in_place
+    status: candidate
+    purpose: >
+      IRCC program glossaries: reference for writing column comments on the
+      IRCC tables. Not analytical data.
+    formats: [CSV]
+    description: >
+      IRCC Glossaries (citizenship and visitors programs). update_pattern to
+      be confirmed after the first ingestion, from the resources'
+      last_modified.
