@@ -41,7 +41,9 @@ All tests must pass before committing.
 3. **National scope.** Do not filter by province in ingestion, bronze or
    silver. Province filtering belongs in gold or the website.
 4. **Registry first.** Prefer configuration in `config/datasets.yml` over
-   new code paths. Validate new registry fields in `parse_registry`.
+   new code paths. Validate new registry fields in `parse_registry`. Every
+   entry needs a `status` (`candidate`, `active`, `deprecated`) and a
+   `purpose`; only `active` entries are ingested.
 5. **No data, no secrets in Git.** Credentials come from Databricks secrets.
    Do not hard-code personal emails or tokens.
 6. **Unity Catalog names** are lower-case `snake_case`; volumes are
@@ -52,6 +54,10 @@ All tests must pass before committing.
    `.py` file in Databricks source format (first line `# Databricks notebook source`,
    `# MAGIC %md` for markdown, `# COMMAND ----------` between cells), like
    `src/ingest/run_ingestion.py`. Do not create `.ipynb` files.
+9. **Metadata lives in code.** Table comments, column comments and Unity
+   Catalog tags must be written in the DDL or pipeline code, never only in the
+   Databricks UI. Renaming a catalog, schema, table, view or column loses
+   its lineage, so say so before doing it.
 
 ## Databricks guidance
 

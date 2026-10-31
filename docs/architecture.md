@@ -59,7 +59,22 @@ Lakeflow Connect has no CKAN connector. A Lakeflow Connect *custom connector*
 
 Datasets are declared in `config/datasets.yml`. Adding a dataset is a
 configuration change. The registry is validated at load time (required keys,
-unknown keys, duplicate keys, safe names, valid regex).
+unknown keys, duplicate keys and CKAN ids, safe names, valid regex, valid
+`status`, non-empty `purpose`).
+
+Every entry has a `status` and a `purpose`:
+
+| `status` | Meaning |
+|---|---|
+| `candidate` | registered, not ingested yet (under evaluation) |
+| `active` | ingested by `run_ingestion` |
+| `deprecated` | kept for the record, no longer ingested |
+
+`purpose` records why the dataset is wanted and where it will be used. An
+`active` entry cannot keep a placeholder purpose (one starting with `TODO`, as
+written by discovery); candidates and deprecated entries may. Only `active`
+entries are ingested. The old `enabled` flag is gone; the parser
+rejects it with a pointer to `status`.
 
 ### Dataset discovery
 
@@ -70,10 +85,11 @@ keywords is recorded once per run, with all of them in `search_queries`. If
 any search fails, the run fails and writes nothing. Rows of one run (all
 keywords) share `run_id` and `discovered_at`; `is_registered` says whether
 `config/datasets.yml` already lists the dataset (matched by CKAN id or name,
-same portal, enabled or not). Rows are never deduplicated, so the table is a
+same portal, any `status`). Rows are never deduplicated, so the table is a
 history; `metadata.ckan_dataset_current` keeps the newest row per `ckan_id`
-(`QUALIFY row_number()`). Discovery only prints draft registry entries; adding
-a dataset stays a manual, reviewed change to the registry.
+(`QUALIFY row_number()`). Discovery only prints draft registry entries (as
+`candidate`, with a placeholder `purpose` to fill in); adding a dataset stays a
+manual, reviewed change to the registry.
 
 `CREATE TABLE IF NOT EXISTS` does not alter an existing table. While the
 snapshot table is in development, a schema change is applied by dropping the
@@ -137,10 +153,45 @@ or `sha256-<12 hex>` of the content when no timestamp exists. Snapshots feed
 - Use current Databricks product names (Lakeflow Jobs, Lakeflow Spark
   Declarative Pipelines, Declarative Automation Bundles, AUTO CDC, Git folders).
 
-## 8. Open items to verify
+## 8. Metadata model
 
-- IRCC permanent residents: confirm the resource name for `name_regex`
-  and whether files are updated in place (check `last_modified`).
+Each kind of metadata has one home, so nothing is documented twice.
+
+| Question | Where it lives | How it is kept |
+|---|---|---|
+| What data exists outside? | `metadata.ckan_dataset_snapshot` (append-only, safe to re-run) and the view `metadata.ckan_dataset_current` (latest state) | written by `tools/discover_datasets` |
+| Which of it do we use, and why? | `status` and `purpose` in `config/datasets.yml` | reviewed in Git |
+| Where does data flow? | Unity Catalog lineage | captured automatically |
+| What do the fields mean? | Unity Catalog table comments and column comments | written in the pipeline code |
+| Domain, source, licence, where it is published | Unity Catalog tags | written in the pipeline code |
+
+Tag keys such as `domain`, `source`, `licence` and `publication` are proposed
+names; fix them when the first tables are built.
+
+### Rules that follow from the platform
+
+- **Lineage is automatic.** Unity Catalog captures lineage, down to columns,
+  for queries run through Spark DataFrame or Databricks SQL interfaces
+  ([Lineage](https://docs.databricks.com/aws/en/data-governance/unity-catalog/data-lineage)).
+  Nothing to maintain, but it is **not preserved when a catalog, schema, table,
+  view or column is renamed**. Announce a rename before doing it.
+- **Comments and tags live in code.** Set them in the DDL or pipeline code, not
+  only in the Databricks UI, so a rebuild does not lose them. Tags use
+  `ALTER ... SET TAGS` (Runtime 13.3+) or `SET TAG` (16.1+); columns are tagged one
+  per statement; keys are case sensitive and cannot contain
+  `. , - = / :` ([Tags](https://docs.databricks.com/aws/en/database-objects/tags)).
+- **Not confirmed in the docs.** The Tags page does not cover table and column
+  comment syntax, so confirm it in the SQL reference when the first comments are
+  written. The Free Edition limitations page does not mention lineage or tags,
+  but does not say they are supported either: check in the workspace.
+
+## 9. Open items to verify
+
+- IRCC datasets: all of them have `name_regex` removed, so every CSV table
+  lands under one dataset key. Confirm `update_pattern` (do files change in
+  place?) after the first ingestion; most IRCC resources carry no
+  `last_modified`, so versions fall back to `metadata_modified` or a content
+  hash. Bronze must tell the tables apart by resource id.
 - Free Edition: confirm outbound access per domain (`opendata.brandon.ca`
   timed out; `data.winnipeg.ca` and `open.canada.ca` reachable).
 - CIHI terms of use before publishing CIHI-derived charts.

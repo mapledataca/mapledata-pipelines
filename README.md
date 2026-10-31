@@ -69,9 +69,11 @@ CLAUDE.md                        instructions for AI coding agents
 
 ## Adding a dataset
 
-Add an entry to `config/datasets.yml` (see the comments in that file), run the
-tests, then run ingestion for that key. If the domain is new, re-run
-`bootstrap_catalog` to create its schemas.
+Add an entry to `config/datasets.yml` (see the comments in that file). Every
+entry needs a `status` (`candidate`, `active` or `deprecated`) and a `purpose`;
+only `active` entries are ingested. Run the tests, then run ingestion for that
+key. If the domain is new, re-run `bootstrap_catalog` to create its schemas.
+`tools/discover_datasets` can search CKAN and draft entries for you.
 
 ## Data sources and licences
 
