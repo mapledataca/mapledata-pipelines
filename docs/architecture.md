@@ -103,9 +103,16 @@ table (`DROP TABLE <catalog>.metadata.ckan_dataset_snapshot`) and re-running
 | `new_file_per_period` | adds a new file each period (LMIA, quarterly) | `<resource_id>_<basename>` |
 | `overwrite_in_place` | replaces the same file, may revise history (IRCC monthly) | `<resource_id>/<version>_<basename>` |
 
-`<version>` is the resource's `last_modified` (fallback `metadata_modified`),
-or `sha256-<12 hex>` of the content when no timestamp exists. Snapshots feed
-**AUTO CDC FROM SNAPSHOT** downstream.
+`<version>` is the resource's `last_modified`, and nothing else. When a
+resource has no `last_modified`, the file is downloaded and `<version>` is
+`sha256-<12 hex>` of its content; identical content is never stored twice.
+Snapshots feed **AUTO CDC FROM SNAPSHOT** downstream.
+
+`metadata_modified` is deliberately not a fallback: it can stay unchanged after
+a file's content is replaced, which would skip the update without any sign.
+The cost is that a resource without `last_modified` (the IRCC monthly datasets)
+is downloaded again on every run, because the hash needs the bytes; a resource
+with `last_modified` is still skipped from metadata alone.
 
 ### Reliability rules
 
@@ -188,10 +195,10 @@ names; fix them when the first tables are built.
 ## 9. Open items to verify
 
 - IRCC datasets: all of them have `name_regex` removed, so every CSV table
-  lands under one dataset key. Confirm `update_pattern` (do files change in
-  place?) after the first ingestion; most IRCC resources carry no
-  `last_modified`, so versions fall back to `metadata_modified` or a content
-  hash. Bronze must tell the tables apart by resource id.
+  lands under one dataset key. Bronze must tell the tables apart by resource id.
+- IRCC candidates (asylum claimants, Express Entry, glossaries): assumed to
+  behave like the four active IRCC monthly datasets (updated in place, no
+  `last_modified`). Confirm when each becomes active.
 - Free Edition: confirm outbound access per domain (`opendata.brandon.ca`
   timed out; `data.winnipeg.ca` and `open.canada.ca` reachable).
 - CIHI terms of use before publishing CIHI-derived charts.
