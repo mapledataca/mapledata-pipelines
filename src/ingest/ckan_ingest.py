@@ -27,8 +27,9 @@ overwrite_in_place
     The publisher replaces the same file each period, often revising history
     (e.g. IRCC monthly updates). Every distinct version is kept as a snapshot:
         <resource_id>/<version>_<basename>
-    <version> comes from the resource's last_modified (or metadata_modified).
-    If neither is present, the file is downloaded and a content hash
+    <version> comes from the resource's last_modified only. metadata_modified
+    is not used: it can stay unchanged after the content is replaced. Without
+    last_modified, the file is downloaded on every run and a content hash
     ("sha256-<12 hex>") is used instead, so identical content is never stored
     twice. Downstream, the snapshots can feed AUTO CDC FROM SNAPSHOT.
 
@@ -511,17 +512,18 @@ def url_basename(resource: dict) -> str:
 
 
 def resource_version(resource: dict) -> Optional[str]:
-    """Version token from CKAN timestamps, e.g. "20251023T155027", or None.
+    """Version token from the resource's last_modified, e.g. "20251023T155027", or None.
 
-    last_modified changes when the file is replaced; metadata_modified is a
-    weaker fallback (it also changes when only the description is edited,
-    which at worst stores one extra identical snapshot).
+    Only last_modified is used. metadata_modified is deliberately NOT a
+    fallback: it can stay unchanged after the file's content is replaced, which
+    would silently skip an update. Without last_modified the caller downloads
+    the file and versions it by content hash instead.
     """
-    stamp = resource.get("last_modified") or resource.get("metadata_modified")
+    stamp = resource.get("last_modified")
     if not stamp:
         return None
     # "2025-10-23T15:50:27.245365" -> "20251023T155027" (drop sub-seconds)
-    return _safe_token(str(stamp).split(".")[0])
+    return _safe_token(str(stamp).split(".")[0]) or None
 
 
 def target_relpath(resource: dict, spec: DatasetSpec, version: Optional[str]) -> str:

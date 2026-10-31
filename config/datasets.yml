@@ -37,8 +37,8 @@ datasets:
       province. Feeds the labour-demand metrics of the immigration domain.
     formats: [CSV, XLSX, XLS]
     description: >
-      ESDC TFWP Positive LMIA Employers List. Quarterly; one new file per
-      quarter. CSV until 2020Q3, XLSX afterwards.
+      ESDC TFWP Positive LMIA Employers List. Quarterly; each quarter adds new
+      resources (confirmed). CSV until 2020Q3, XLSX afterwards.
 
   - key: esdc_lmia_negative_employers
     domain: immigration
@@ -50,8 +50,8 @@ datasets:
       approval-versus-refusal context by province.
     formats: [CSV, XLSX, XLS]
     description: >
-      ESDC TFWP Negative LMIA Employers List. Quarterly. update_pattern to be
-      confirmed after the first ingestion, from the resources' last_modified.
+      ESDC TFWP Negative LMIA Employers List. Quarterly; each quarter adds new
+      resources (confirmed).
 
   - key: esdc_lmia_statistics_quarterly
     domain: immigration
@@ -64,8 +64,9 @@ datasets:
       including Manitoba.
     formats: [CSV]
     description: >
-      ESDC TFWP LMIA Statistics, quarterly tables. update_pattern to be
-      confirmed after the first ingestion, from the resources' last_modified.
+      ESDC TFWP LMIA Statistics, quarterly tables. Every CSV resource has a
+      last_modified (17 of 17 on 2026-10-31), later than its creation date, so
+      resources are replaced in place; versions use last_modified.
 
   - key: esdc_lmia_statistics_annual
     domain: immigration
@@ -77,8 +78,9 @@ datasets:
       the quarterly tables.
     formats: [CSV]
     description: >
-      ESDC TFWP LMIA Statistics, annual tables. update_pattern to be confirmed
-      after the first ingestion, from the resources' last_modified.
+      ESDC TFWP LMIA Statistics, annual tables. Every CSV resource has a
+      last_modified (4 of 4 on 2026-10-31), later than its creation date, so
+      resources are replaced in place; versions use last_modified.
 
   - key: ircc_permanent_residents_monthly
     domain: immigration
@@ -92,8 +94,8 @@ datasets:
     formats: [CSV]
     description: >
       IRCC Permanent Residents - Monthly IRCC Updates. Every CSV table is
-      ingested (no name filter). update_pattern to be confirmed after the first
-      ingestion, from the resources' last_modified.
+      ingested (no name filter). Confirmed: updated in place; resources have no
+      last_modified, so versions are content hashes (sha256-...).
 
   - key: ircc_study_permit_holders_monthly
     domain: immigration
@@ -105,9 +107,9 @@ datasets:
       citizenship: international student numbers for Manitoba.
     formats: [CSV]
     description: >
-      IRCC Temporary Residents - Study Permit Holders (monthly).
-      update_pattern to be confirmed after the first ingestion, from the
-      resources' last_modified.
+      IRCC Temporary Residents - Study Permit Holders (monthly). Confirmed:
+      updated in place; resources have no last_modified, so versions are
+      content hashes (sha256-...).
 
   - key: ircc_work_permit_holders_monthly
     domain: immigration
@@ -119,9 +121,9 @@ datasets:
       occupational skill level and country: temporary workers in Manitoba.
     formats: [CSV]
     description: >
-      IRCC Temporary Residents - Work Permit Holders (monthly).
-      update_pattern to be confirmed after the first ingestion, from the
-      resources' last_modified.
+      IRCC Temporary Residents - Work Permit Holders (monthly). Confirmed:
+      updated in place; resources have no last_modified, so versions are
+      content hashes (sha256-...).
 
   - key: ircc_tr_to_pr_transition_monthly
     domain: immigration
@@ -134,8 +136,8 @@ datasets:
     formats: [CSV]
     description: >
       IRCC Transition from Temporary Resident to Permanent Resident Status
-      (monthly). update_pattern to be confirmed after the first ingestion,
-      from the resources' last_modified.
+      (monthly). Confirmed: updated in place; resources have no last_modified,
+      so versions are content hashes (sha256-...).
 
   # --- Immigration: candidate (registered, not ingested yet) ---------------
   - key: ircc_asylum_claimants_monthly
@@ -148,8 +150,9 @@ datasets:
       immigration datasets work end to end.
     formats: [CSV]
     description: >
-      IRCC Asylum Claimants (monthly). update_pattern to be confirmed after
-      the first ingestion, from the resources' last_modified.
+      IRCC Asylum Claimants (monthly). Assumed to behave like the active IRCC
+      monthly datasets (updated in place, last_modified mostly empty); confirm
+      when it becomes active.
 
   - key: irb_rpd_decisions
     domain: immigration
@@ -175,8 +178,9 @@ datasets:
       category: evaluate as a pathway breakdown of permanent residence.
     formats: [CSV]
     description: >
-      IRCC Express Entry Permanent Residents (monthly). update_pattern to be
-      confirmed after the first ingestion, from the resources' last_modified.
+      IRCC Express Entry Permanent Residents (monthly). Assumed to behave like
+      the active IRCC monthly datasets (updated in place, last_modified
+      empty); confirm when it becomes active.
 
   - key: ircc_express_entry_invitations_monthly
     domain: immigration
@@ -188,8 +192,9 @@ datasets:
       evaluate as a leading indicator of permanent residence.
     formats: [CSV]
     description: >
-      IRCC Express Entry-Invited Candidates (monthly). update_pattern to be
-      confirmed after the first ingestion, from the resources' last_modified.
+      IRCC Express Entry-Invited Candidates (monthly). Assumed to behave like
+      the active IRCC monthly datasets (updated in place, last_modified
+      empty); confirm when it becomes active.
 
   - key: ircc_glossaries
     domain: immigration
@@ -201,6 +206,6 @@ datasets:
       IRCC tables. Not analytical data.
     formats: [CSV]
     description: >
-      IRCC Glossaries (citizenship and visitors programs). update_pattern to
-      be confirmed after the first ingestion, from the resources'
-      last_modified.
+      IRCC Glossaries (citizenship and visitors programs). Assumed to behave
+      like the active IRCC monthly datasets (updated in place); confirm when it
+      becomes active.

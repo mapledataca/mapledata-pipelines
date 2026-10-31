@@ -329,8 +329,20 @@ def test_select_resources_sorted_oldest_first():
 
 def test_resource_version_normalises_timestamp():
     assert ci.resource_version({"last_modified": "2025-10-23T15:50:27.245365"}) == "20251023T155027"
-    assert ci.resource_version({"metadata_modified": "2024-01-02T03:04:05"}) == "20240102T030405"
     assert ci.resource_version({}) is None
+
+
+def test_resource_version_ignores_metadata_modified():
+    # metadata_modified can stay put when the file is replaced, so it must not
+    # stand in for last_modified.
+    assert ci.resource_version({"metadata_modified": "2024-01-02T03:04:05"}) is None
+    both = {"last_modified": "2025-10-23T15:50:27", "metadata_modified": "2024-01-02T03:04:05"}
+    assert ci.resource_version(both) == "20251023T155027"
+
+
+@pytest.mark.parametrize("last_modified", [None, "", "-", "///"])
+def test_resource_version_is_none_when_last_modified_is_unusable(last_modified):
+    assert ci.resource_version({"last_modified": last_modified}) is None
 
 
 def test_target_relpath_per_pattern():
@@ -467,22 +479,60 @@ def test_snapshot_new_version_creates_new_file_same_version_skips(settings):
     }
 
 
-def test_snapshot_without_timestamp_dedupes_by_content_hash(settings):
+def test_snapshot_without_last_modified_redownloads_and_dedupes_by_content_hash(settings):
     spec = make_spec(pattern=ci.OVERWRITE)
-    res = make_resource("pr")  # no last_modified / metadata_modified
+    res = make_resource("pr")  # no last_modified
     routes = {api(spec): metadata([res]), res["url"]: FakeResponse(200, b"same", XLSX)}
 
     first = ci.ingest_dataset(FakeSession(routes), spec, settings, "run1")
     digest = hashlib.sha256(b"same").hexdigest()[:12]
     assert first.downloaded == [f"pr/sha256-{digest}_data_en.xlsx"]
 
-    second = ci.ingest_dataset(FakeSession(routes), spec, settings, "run2")
+    # Same content: the file is fetched again (the hash needs the bytes) but
+    # nothing new is stored.
+    session = FakeSession(routes)
+    second = ci.ingest_dataset(session, spec, settings, "run2")
     assert second.downloaded == [] and len(second.skipped) == 1
+    assert session.calls == [api(spec), res["url"]]
 
     routes[res["url"]] = FakeResponse(200, b"changed", XLSX)
     third = ci.ingest_dataset(FakeSession(routes), spec, settings, "run3")
     assert len(third.downloaded) == 1
     assert len(ci.completed_files(ci.dataset_landing_dir(settings, spec))) == 2
+
+
+def test_snapshot_with_only_metadata_modified_still_catches_changed_content(settings):
+    # The case this rule exists for: the publisher replaces the file but
+    # metadata_modified does not move. It must not be treated as "unchanged".
+    spec = make_spec(pattern=ci.OVERWRITE)
+    res = make_resource("pr")
+    res["metadata_modified"] = "2026-01-01T00:00:00"
+    routes = {api(spec): metadata([res]), res["url"]: FakeResponse(200, b"old", XLSX)}
+
+    first = ci.ingest_dataset(FakeSession(routes), spec, settings, "run1")
+    old_digest = hashlib.sha256(b"old").hexdigest()[:12]
+    assert first.downloaded == [f"pr/sha256-{old_digest}_data_en.xlsx"]
+
+    routes[res["url"]] = FakeResponse(200, b"new", XLSX)  # metadata_modified unchanged
+    second = ci.ingest_dataset(FakeSession(routes), spec, settings, "run2")
+    new_digest = hashlib.sha256(b"new").hexdigest()[:12]
+    assert second.downloaded == [f"pr/sha256-{new_digest}_data_en.xlsx"]
+    assert len(ci.completed_files(ci.dataset_landing_dir(settings, spec))) == 2
+
+
+def test_snapshot_with_last_modified_still_skips_without_downloading(settings):
+    # Unchanged behaviour: a known version is skipped from metadata alone, even
+    # when metadata_modified differs.
+    spec = make_spec(pattern=ci.OVERWRITE)
+    res = make_resource("pr", last_modified="2026-09-15T10:00:00")
+    res["metadata_modified"] = "2026-10-01T00:00:00"
+    routes = {api(spec): metadata([res]), res["url"]: FakeResponse(200, b"x", XLSX)}
+    ci.ingest_dataset(FakeSession(routes), spec, settings, "run1")
+
+    session = FakeSession(routes)
+    again = ci.ingest_dataset(session, spec, settings, "run2")
+    assert again.skipped == ["pr/20260915T100000_data_en.xlsx"]
+    assert session.calls == [api(spec)]
 
 
 # ---------------------------------------------------------------------------
