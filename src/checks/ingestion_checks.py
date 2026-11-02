@@ -83,6 +83,8 @@ SNAPSHOT_COLUMNS = (
     ("last_modified", "STRING"),
     ("created", "STRING"),
     ("selected", "BOOLEAN"),
+    ("archived", "BOOLEAN"),
+    ("dataset_archived", "BOOLEAN"),
     ("landed_path", "STRING"),
 )
 
@@ -106,6 +108,10 @@ _RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 _SAFE_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 _ARCHIVED = re.compile("archived", re.IGNORECASE)
 _ROUNDED = re.compile("rounded", re.IGNORECASE)
+
+#: The fields searched for "archived" (and "rounded" in a resource).
+_DATASET_TEXT = ("name", "title", "notes")
+_RESOURCE_TEXT = ("name", "description")
 
 
 # ---------------------------------------------------------------------------
@@ -233,10 +239,17 @@ def build_resource_snapshot(
     selected is True for the resources this registry entry ingests;
     landed_path is the file this run wrote or found already present, or None
     (not selected, or the download failed).
+
+    archived records whether "archived" appears in the resource name or
+    description, and dataset_archived whether it appears in the dataset name,
+    title or description (the same value on every row of a dataset). The next
+    run reads them back from the previous snapshot, so check_archived can report
+    what changed instead of what is.
     """
     resources = metadata.get("resources") or []
     selected_ids = {r.get("id") for r in ci.select_resources(metadata, spec)}
     landed = _landed_paths(run_log, [r.get("id") for r in resources])
+    dataset_archived = bool(_matched_fields(metadata, _DATASET_TEXT, _ARCHIVED))
     rows = []
     for res in resources:
         rid = res.get("id")
@@ -254,6 +267,8 @@ def build_resource_snapshot(
                 "last_modified": res.get("last_modified"),
                 "created": res.get("created"),
                 "selected": rid in selected_ids,
+                "archived": bool(_matched_fields(res, _RESOURCE_TEXT, _ARCHIVED)),
+                "dataset_archived": dataset_archived,
                 "landed_path": landed.get(rid),
             }
         )
@@ -447,38 +462,85 @@ def check_missing_last_modified(ctx: Context) -> list:
     ]
 
 
-def check_archived(ctx: Context) -> list:
-    """WARN: "archived" (any case) in a name or description.
+def check_archived(ctx: Context, previous: Optional[list] = None) -> list:
+    """Report archived resources as changes, not as a standing state.
 
-    Looks at the dataset (name, title, description) and at each selected
-    resource (name, description). One finding per match.
+    "Archived" means "no longer updated", not "no value", and archived
+    resources are landed on purpose. So this check does not repeat itself on
+    every run. It looks for "archived" (any case) in the dataset (name, title,
+    description) and in each selected resource (name, description), and
+    compares with the previous snapshot (previous), which stores the state:
+
+    - WARN, one per resource, when a resource is newly archived: it was not
+      archived in the previous snapshot (a resource that did not exist then
+      counts as not archived). Likewise one WARN for the dataset when its text
+      newly says archived.
+    - On the first run (no previous snapshot) everything archived is WARN,
+      with first_run true in details_json.
+    - Otherwise, when archived things are unchanged, one aggregated INFO per
+      dataset ("N archived resources landed, unchanged") with the resource_id
+      list and the count in details_json.
+
+    Nothing is reported when nothing is archived.
     """
+    previous = previous or []
+    first_run = not previous
+    was_archived = {r["resource_id"] for r in previous if r.get("archived")}
+    dataset_was_archived = any(r.get("dataset_archived") for r in previous)
+
     findings = []
-    dataset_fields = _matched_fields(
-        ctx.metadata, ("name", "title", "notes"), _ARCHIVED
-    )
+    dataset_fields = _matched_fields(ctx.metadata, _DATASET_TEXT, _ARCHIVED)
+    dataset_unchanged = False
     if dataset_fields:
-        findings.append(
-            ctx.finding(
-                ARCHIVED,
-                WARN,
-                "dataset name or description says it is archived",
-                matched_in=dataset_fields,
-            )
-        )
-    for res in ctx.selected:
-        fields = _matched_fields(res, ("name", "description"), _ARCHIVED)
-        if fields:
+        if first_run or not dataset_was_archived:
             findings.append(
                 ctx.finding(
                     ARCHIVED,
                     WARN,
-                    f"resource name or description says it is archived: "
-                    f"{ci._resource_name(res)}",
-                    res["id"],
-                    matched_in=fields,
+                    "dataset name or description says it is archived"
+                    + (" (first run, nothing to compare with)" if first_run else " (newly)"),
+                    matched_in=dataset_fields,
+                    first_run=first_run,
                 )
             )
+        else:
+            dataset_unchanged = True
+
+    unchanged = []
+    for res in ctx.selected:
+        fields = _matched_fields(res, _RESOURCE_TEXT, _ARCHIVED)
+        if not fields:
+            continue
+        if res["id"] in was_archived:
+            unchanged.append(res["id"])
+            continue
+        findings.append(
+            ctx.finding(
+                ARCHIVED,
+                WARN,
+                "resource is archived "
+                + ("(first run, nothing to compare with)" if first_run else "(newly)")
+                + f": {ci._resource_name(res)}",
+                res["id"],
+                matched_in=fields,
+                first_run=first_run,
+            )
+        )
+
+    if unchanged or dataset_unchanged:
+        message = f"{len(unchanged)} archived resources landed, unchanged"
+        if dataset_unchanged:
+            message += "; the dataset description also says archived, unchanged"
+        findings.append(
+            ctx.finding(
+                ARCHIVED,
+                INFO,
+                message,
+                archived_resource_count=len(unchanged),
+                resource_ids=sorted(unchanged),
+                dataset_description_archived=dataset_unchanged,
+            )
+        )
     return findings
 
 
@@ -582,7 +644,7 @@ def run_checks(
         findings += check_resource_added(ctx, snapshot, previous)
         findings += check_format_gap(ctx)
         findings += check_missing_last_modified(ctx)
-        findings += check_archived(ctx)
+        findings += check_archived(ctx, previous)
         findings += check_rounded_values(ctx, snapshot, read_head, landing_dir)
 
     order = {s: i for i, s in enumerate(SEVERITIES)}

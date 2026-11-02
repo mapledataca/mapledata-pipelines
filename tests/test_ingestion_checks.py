@@ -390,7 +390,17 @@ def test_missing_last_modified_only_applies_to_overwrite_in_place():
 # ---------------------------------------------------------------------------
 
 
-def test_archived_matches_dataset_and_resources_ignoring_case():
+def archived(spec, metadata, previous_metadata=None):
+    """Run check_archived, with the previous snapshot built from older metadata."""
+    previous = (
+        ic.build_resource_snapshot("20260901T000000Z", NOW, spec, previous_metadata, log())
+        if previous_metadata is not None
+        else []
+    )
+    return ic.check_archived(ctx(spec, metadata), previous)
+
+
+def test_archived_first_run_warns_for_every_archived_resource_and_the_dataset():
     spec = make_spec()
     metadata = meta(
         res("a", "Old table (ARCHIVED)"),
@@ -398,16 +408,102 @@ def test_archived_matches_dataset_and_resources_ignoring_case():
         res("c", "Current table"),
         notes="Archived dataset; kept for reference.",
     )
-    found = ic.check_archived(ctx(spec, metadata))
+    found = archived(spec, metadata)  # no previous snapshot
 
     assert names(found) == [
         (ic.ARCHIVED, ic.WARN, None),
         (ic.ARCHIVED, ic.WARN, "a"),
         (ic.ARCHIVED, ic.WARN, "b"),
     ]
-    assert details(found[0]) == {"matched_in": ["notes"]}
-    assert details(found[1]) == {"matched_in": ["name"]}
-    assert details(found[2]) == {"matched_in": ["description"]}
+    assert details(found[0]) == {"matched_in": ["notes"], "first_run": True}
+    assert details(found[1]) == {"matched_in": ["name"], "first_run": True}
+    assert details(found[2]) == {"matched_in": ["description"], "first_run": True}
+    assert "first run" in found[1].message
+
+
+def test_archived_unchanged_is_one_aggregated_info_per_dataset():
+    spec = make_spec()
+    metadata = meta(
+        res("a", "Old table [ARCHIVED]"),
+        res("b", "Old table 2", description="archived"),
+        res("c", "Current"),
+        notes="Tables 5 and 8 remain as archived tables.",
+    )
+    found = archived(spec, metadata, previous_metadata=metadata)
+
+    assert names(found) == [(ic.ARCHIVED, ic.INFO, None)]
+    assert found[0].message == (
+        "2 archived resources landed, unchanged; "
+        "the dataset description also says archived, unchanged"
+    )
+    assert details(found[0]) == {
+        "archived_resource_count": 2,
+        "resource_ids": ["a", "b"],
+        "dataset_description_archived": True,
+    }
+
+
+def test_archived_unchanged_without_a_dataset_level_match_says_only_resources():
+    spec = make_spec()
+    metadata = meta(res("a", "Old [archived]"), res("b", "Current"))
+    (finding,) = archived(spec, metadata, previous_metadata=metadata)
+    assert finding.message == "1 archived resources landed, unchanged"
+    assert details(finding)["dataset_description_archived"] is False
+
+
+def test_archived_newly_archived_resource_warns_and_the_rest_stay_info():
+    spec = make_spec()
+    before = meta(res("a", "Old [archived]"), res("b", "Table B"), res("gone", "Gone"))
+    now = meta(
+        res("a", "Old [archived]"),        # still archived: unchanged
+        res("b", "Table B [ARCHIVED]"),    # became archived: newly archived
+        res("c", "Brand new [archived]"),  # arrives archived: never seen before
+    )
+    found = archived(spec, now, previous_metadata=before)
+
+    assert names(found) == [
+        (ic.ARCHIVED, ic.WARN, "b"),
+        (ic.ARCHIVED, ic.WARN, "c"),
+        (ic.ARCHIVED, ic.INFO, None),
+    ]
+    assert details(found[0]) == {"matched_in": ["name"], "first_run": False}
+    assert "newly" in found[0].message
+    assert details(found[2])["resource_ids"] == ["a"]
+    assert details(found[2])["archived_resource_count"] == 1
+
+
+def test_archived_dataset_that_newly_says_archived_warns_once():
+    spec = make_spec()
+    before = meta(res("a", "Table"))
+    now = meta(res("a", "Table"), notes="This dataset is now archived.")
+    found = archived(spec, now, previous_metadata=before)
+    assert names(found) == [(ic.ARCHIVED, ic.WARN, None)]
+    assert details(found[0]) == {"matched_in": ["notes"], "first_run": False}
+    assert "newly" in found[0].message
+
+
+def test_archived_state_is_remembered_even_when_only_the_description_says_it():
+    # A name-only comparison would call this newly archived on every run.
+    spec = make_spec()
+    metadata = meta(res("a", "Plain name", description="This table is archived."))
+    rows = snapshot(spec, metadata)
+    assert [(r["archived"], r["dataset_archived"]) for r in rows] == [(True, False)]
+    found = ic.check_archived(ctx(spec, metadata), rows)
+    assert names(found) == [(ic.ARCHIVED, ic.INFO, None)]
+
+
+def test_archived_is_silent_when_nothing_is_archived():
+    spec = make_spec()
+    metadata = meta(res("a", "Fine"))
+    assert archived(spec, metadata) == []
+    assert archived(spec, metadata, previous_metadata=metadata) == []
+
+
+def test_archived_no_longer_archived_is_not_reported():
+    spec = make_spec()
+    before = meta(res("a", "Old [archived]"))
+    now = meta(res("a", "Old"))
+    assert archived(spec, now, previous_metadata=before) == []
 
 
 def test_archived_reads_translated_names_and_descriptions():
@@ -417,7 +513,7 @@ def test_archived_reads_translated_names_and_descriptions():
         res("b", "Plain", description_translated={"en": "ok", "fr": "Archived copy"}),
         title_translated={"en": "A dataset", "fr": "Archived"},
     )
-    found = ic.check_archived(ctx(spec, metadata))
+    found = archived(spec, metadata)
     assert [(f.resource_id, details(f)["matched_in"]) for f in found] == [
         (None, ["title"]), ("a", ["name"]), ("b", ["description"]),
     ]
@@ -426,11 +522,29 @@ def test_archived_reads_translated_names_and_descriptions():
 def test_archived_only_looks_at_selected_resources():
     spec = make_spec(formats=("CSV",))
     metadata = meta(res("a", "Old (archived)", fmt="XLSX"), res("b", "Fine"))
-    assert ic.check_archived(ctx(spec, metadata)) == []
+    assert archived(spec, metadata) == []
+    assert archived(spec, metadata, previous_metadata=metadata) == []
 
 
-def test_archived_is_silent_when_nothing_matches():
-    assert ic.check_archived(ctx(make_spec(), meta(res("a", "Fine")))) == []
+def test_snapshot_records_archived_state_per_resource_and_per_dataset():
+    spec = make_spec()
+    metadata = meta(res("a", "Old [archived]"), res("b", "Current"), title="Archived data")
+    rows = snapshot(spec, metadata)
+    assert [(r["resource_id"], r["archived"]) for r in rows] == [("a", True), ("b", False)]
+    assert {r["dataset_archived"] for r in rows} == {True}
+
+
+def test_run_checks_reports_archived_as_info_on_the_second_run():
+    spec = make_spec()
+    metadata = {"ds": meta(res("a", "Old [archived]"))}
+    first = ic.run_checks(RUN, NOW, [spec], metadata, {"ds": log()})
+    assert names(first) == [(ic.ARCHIVED, ic.WARN, "a")]
+
+    previous = {"ds": ic.build_resource_snapshot("20260901T000000Z", NOW, spec, metadata["ds"], log())}
+    second = ic.run_checks(
+        RUN, NOW, [spec], metadata, {"ds": log()}, previous_rows_by_key=previous
+    )
+    assert names(second) == [(ic.ARCHIVED, ic.INFO, None)]
 
 
 # ---------------------------------------------------------------------------
