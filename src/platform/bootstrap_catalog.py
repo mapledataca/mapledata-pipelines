@@ -31,7 +31,6 @@ import ckan_ingest as ci
 catalog = dbutils.widgets.get("catalog")
 specs = ci.load_registry(str(repo_root / "config" / "datasets.yml"))
 domains = {s.domain for s in specs}  # include non-active datasets: schemas are cheap
-statements = cs.build_ddl(catalog, domains)
 
 # Read the comments the metadata tables have now, before any DDL runs. Re-applying
 # an unchanged comment still creates a Delta version, so only differences run.
@@ -46,19 +45,21 @@ if cs.catalog_exists(catalog_names, catalog):
 else:
     print(f"Catalog {catalog} does not exist yet: no table has comments to compare")
     current = {}
-comments = cs.build_comment_statements(catalog, current)
-# A column the code defines but an existing table lacks is added, never by
-# dropping the table: the column-exists check is the comparison above.
-migrations = cs.build_add_column_statements(catalog, comments.missing_columns)
+# The plan is in the order it must run: tables, ADD COLUMNS (never a DROP: the
+# column-exists check is the comparison above), comment statements, and the views
+# last. A SELECT * view is bound when it is created, so it has to be recreated
+# after the tables changed.
+plan = cs.build_setup_plan(catalog, domains, current)
 
 dry_run = dbutils.widgets.get("dry_run") == "true"
-for sql in statements + migrations + comments.statements:
+for sql in plan.statements:
     print(("DRY RUN  " if dry_run else "EXECUTE  ") + sql)
     if not dry_run:
         spark.sql(sql)
 
-print(f"\n{comments.up_to_date} comments up to date")
+print(f"\n{plan.comments.up_to_date} comments up to date")
 print(
-    f"Done: {len(statements)} statements for domains {sorted(domains)}, "
-    f"{len(migrations)} columns added, {len(comments.statements)} comment statements"
+    f"Done: {len(plan.statements)} statements for domains {sorted(domains)}, "
+    f"{len(plan.migrations)} columns added, "
+    f"{len(plan.comments.statements)} comment statements"
 )

@@ -284,10 +284,58 @@ def domain_schemas(domains: Iterable[str]) -> list:
     return [f"{_check(d, 'domain')}_{layer}" for d in sorted(set(domains)) for layer in LAYERS]
 
 
-def build_ddl(catalog: str, domains: Iterable[str]) -> list:
-    """Return the ordered list of idempotent DDL statements.
+@dataclass(frozen=True)
+class SetupPlan:
+    """Everything the bootstrap runs, in the order it must run.
 
-    Order matters: catalog, then schemas, then volumes inside schemas.
+    statements: every statement in execution order: the CREATE statements,
+                then ADD COLUMNS, then the comment statements, then the views.
+    comments:   the comment plan (what is up to date, what changed).
+    migrations: the ADD COLUMNS statements, also contained in statements.
+    """
+
+    statements: list
+    comments: CommentPlan
+    migrations: list
+
+
+def build_setup_plan(
+    catalog: str, domains: Iterable[str], current: Optional[dict] = None
+) -> SetupPlan:
+    """The ordered statements of a bootstrap, given the current table comments.
+
+    Order: tables, then ADD COLUMNS, then comment statements, then the views
+    (CREATE OR REPLACE VIEW) last. A view built with SELECT * is bound to the
+    columns the table has when the view is created, so it must be recreated
+    after the table has changed. Observed 2026-11-02: a bootstrap that created
+    the views first left ckan_resource_current without the new column and with
+    the old comment until a second bootstrap.
+
+    current is what parse_current_comments returns (None: no table exists yet).
+    """
+    statements, views = build_ddl_parts(catalog, domains)
+    comments = build_comment_statements(catalog, current)
+    migrations = build_add_column_statements(catalog, comments.missing_columns)
+    return SetupPlan(statements + migrations + comments.statements + views, comments, migrations)
+
+
+def build_ddl(catalog: str, domains: Iterable[str]) -> list:
+    """Return the ordered list of idempotent DDL statements: everything that
+    creates objects, with the views last.
+
+    Altering existing tables (ADD COLUMNS, comments) is not included: see
+    build_setup_plan, which puts those between the tables and the views.
+    """
+    statements, views = build_ddl_parts(catalog, domains)
+    return statements + views
+
+
+def build_ddl_parts(catalog: str, domains: Iterable[str]) -> tuple:
+    """Return (statements, views): the idempotent CREATE statements without the
+    views, and the CREATE OR REPLACE VIEW statements.
+
+    Order within statements matters: catalog, then schemas, then volumes inside
+    schemas, then the tables.
     """
     c = _check(catalog, "catalog")
     statements = [
@@ -306,23 +354,26 @@ def build_ddl(catalog: str, domains: Iterable[str]) -> list:
         _create_table(
             c, "ckan_dataset_snapshot", SNAPSHOT_COLUMNS, DATASET_SNAPSHOT_COMMENT
         ),
-        # CREATE OR REPLACE VIEW is idempotent; Databricks does not allow
-        # IF NOT EXISTS together with OR REPLACE.
+        _create_table(
+            c, "ckan_resource_snapshot", RESOURCE_SNAPSHOT_COLUMNS, RESOURCE_SNAPSHOT_COMMENT
+        ),
+        _create_table(c, "ingestion_findings", FINDING_COLUMNS, FINDINGS_COMMENT),
+    ]
+    # CREATE OR REPLACE VIEW is idempotent; Databricks does not allow
+    # IF NOT EXISTS together with OR REPLACE. They are returned separately so
+    # they run after the tables are altered.
+    views = [
         f"CREATE OR REPLACE VIEW `{c}`.`metadata`.`ckan_dataset_current` "
         f"COMMENT 'Latest snapshot row per ckan_id' AS "
         f"SELECT * FROM `{c}`.`metadata`.`ckan_dataset_snapshot` "
         f"QUALIFY row_number() OVER ("
         f"PARTITION BY ckan_id ORDER BY discovered_at DESC, run_id DESC) = 1",
-        _create_table(
-            c, "ckan_resource_snapshot", RESOURCE_SNAPSHOT_COLUMNS, RESOURCE_SNAPSHOT_COMMENT
-        ),
         f"CREATE OR REPLACE VIEW `{c}`.`metadata`.`ckan_resource_current` "
         f"COMMENT 'Latest snapshot row per resource_id; a removed resource keeps "
         f"the run_id of its last appearance' AS "
         f"SELECT * FROM `{c}`.`metadata`.`ckan_resource_snapshot` "
         f"QUALIFY row_number() OVER ("
         f"PARTITION BY resource_id ORDER BY checked_at DESC, run_id DESC) = 1",
-        _create_table(c, "ingestion_findings", FINDING_COLUMNS, FINDINGS_COMMENT),
     ]
     # CREATE TABLE IF NOT EXISTS leaves an existing table as it is, so comments
     # that changed (or arrived later) are applied by build_comment_statements,
@@ -333,4 +384,4 @@ def build_ddl(catalog: str, domains: Iterable[str]) -> list:
             f"CREATE SCHEMA IF NOT EXISTS `{c}`.`{schema}` "
             f"COMMENT '{domain} domain, {layer} layer'"
         )
-    return statements
+    return statements, views

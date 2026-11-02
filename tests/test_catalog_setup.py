@@ -184,6 +184,103 @@ def test_a_column_the_table_lacks_is_reported_not_commented():
     assert plan.up_to_date == TOTAL_COMMENTS - 1
 
 
+def is_view(sql):
+    return sql.startswith("CREATE OR REPLACE VIEW")
+
+
+def is_create_table(sql):
+    return sql.startswith("CREATE TABLE")
+
+
+def is_add_columns(sql):
+    return sql.startswith("ALTER TABLE") and " ADD COLUMNS (" in sql
+
+
+def is_comment(sql):
+    return sql.startswith("COMMENT ON TABLE") or " ALTER COLUMN " in sql
+
+
+def drifted_current():
+    """Existing tables that lack a column and carry a stale comment."""
+    current = desired_current()
+    del current["ckan_resource_snapshot"]["columns"]["rounded_marker"]
+    current["ckan_resource_snapshot"]["columns"]["dataset_archived"] = "An old comment"
+    return current
+
+
+def indexes(statements, predicate):
+    return [i for i, s in enumerate(statements) if predicate(s)]
+
+
+def test_views_come_after_every_statement_that_alters_a_table():
+    # Observed 2026-11-02: views created before ADD COLUMNS / ALTER COLUMN stayed
+    # bound to the old columns and comments until a second bootstrap.
+    statements = cs.build_setup_plan("mapledata", ["immigration"], drifted_current()).statements
+    altering = indexes(statements, lambda s: is_create_table(s) or is_add_columns(s) or is_comment(s))
+    views = indexes(statements, is_view)
+    assert altering and len(views) == 2
+    assert max(altering) < min(views)
+
+
+def test_the_bootstrap_runs_tables_then_add_columns_then_comments_then_views():
+    statements = cs.build_setup_plan("mapledata", ["immigration"], drifted_current()).statements
+    tables = indexes(statements, is_create_table)
+    adds = indexes(statements, is_add_columns)
+    comments = indexes(statements, is_comment)
+    views = indexes(statements, is_view)
+    assert len(tables) == 3 and len(adds) == 1 and len(comments) == 1 and len(views) == 2
+    assert max(tables) < min(adds) < min(comments) < min(views)
+    # The migration adds the column the views must then pick up.
+    assert "ADD COLUMNS (rounded_marker BOOLEAN" in statements[adds[0]]
+    assert "ALTER COLUMN dataset_archived COMMENT" in statements[comments[0]]
+
+
+def test_appending_the_alters_to_build_ddl_would_recreate_the_bug():
+    # What the bootstrap used to do: build_ddl first, the alters after it. The
+    # views then run before ADD COLUMNS and the comment statements.
+    plan = cs.build_setup_plan("mapledata", ["immigration"], drifted_current())
+    naive = cs.build_ddl("mapledata", ["immigration"]) + plan.migrations + plan.comments.statements
+    assert min(indexes(naive, is_view)) < max(indexes(naive, lambda s: is_add_columns(s) or is_comment(s)))
+    # build_setup_plan is the order that works.
+    ordered = plan.statements
+    assert min(indexes(ordered, is_view)) > max(indexes(ordered, lambda s: is_add_columns(s) or is_comment(s)))
+
+
+def test_views_are_the_last_statements_of_the_plan():
+    statements = cs.build_setup_plan("mapledata", ["immigration", "housing"], drifted_current()).statements
+    views = [s for s in statements if is_view(s)]
+    assert statements[-len(views):] == views            # nothing runs after the views
+    assert statements[:-len(views)] == [s for s in statements if not is_view(s)]
+
+
+def test_on_a_fresh_workspace_the_tables_are_created_before_the_views():
+    plan = cs.build_setup_plan("mapledata", ["immigration"], None)
+    assert plan.migrations == [] and plan.comments.statements == []
+    assert max(indexes(plan.statements, is_create_table)) < min(indexes(plan.statements, is_view))
+
+
+def test_with_nothing_to_change_the_plan_is_just_the_creates_and_the_views():
+    plan = cs.build_setup_plan("mapledata", ["immigration"], desired_current())
+    assert plan.statements == cs.build_ddl("mapledata", ["immigration"])
+    assert not any(is_add_columns(s) or is_comment(s) for s in plan.statements)
+
+
+def test_the_plan_contains_its_migrations_and_comment_statements():
+    plan = cs.build_setup_plan("mapledata", ["immigration"], drifted_current())
+    assert [s for s in plan.statements if is_add_columns(s)] == plan.migrations
+    assert [s for s in plan.statements if is_comment(s)] == plan.comments.statements
+    ddl = cs.build_ddl("mapledata", ["immigration"])
+    assert len(plan.statements) == len(ddl) + len(plan.migrations) + len(plan.comments.statements)
+
+
+def test_build_ddl_puts_the_views_last_and_matches_its_parts():
+    statements, views = cs.build_ddl_parts("mapledata", ["immigration"])
+    assert all(is_view(s) for s in views) and len(views) == 2
+    assert not any(is_view(s) for s in statements)
+    ddl = cs.build_ddl("mapledata", ["immigration"])
+    assert ddl == statements + views
+
+
 def test_a_missing_column_is_added_with_its_comment_and_nothing_else():
     statements = cs.build_add_column_statements(
         "mapledata", [("ckan_resource_snapshot", "archived")]

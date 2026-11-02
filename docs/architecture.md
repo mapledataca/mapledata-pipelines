@@ -351,6 +351,16 @@ names; fix them when the first tables are built.
   nothing missing and adds nothing. Existing rows hold NULL and are not
   backfilled. The first column added this way is `rounded_marker` of
   `ckan_resource_snapshot`.
+- **Views are recreated last.** Observed 2026-11-02: after one bootstrap,
+  `ckan_resource_snapshot` had `rounded_marker` and the new `dataset_archived`
+  comment, but the view `ckan_resource_current` had neither, because
+  `CREATE OR REPLACE VIEW` ran before `ADD COLUMNS` and `ALTER COLUMN`; a
+  second bootstrap fixed it. **`SELECT *` views are bound when created;
+  recreate them after schema changes.** So `build_setup_plan` returns the
+  bootstrap statements in this order: tables, `ADD COLUMNS`, comment
+  statements, then the views. A test asserts that every view statement comes
+  after every statement that creates or alters a table, and that putting the
+  alters after `build_ddl` would reproduce the problem.
 - **Not confirmed in the docs.** The Free Edition limitations page does not
   mention lineage or tags, but does not say they are supported either: check in
   the workspace.
