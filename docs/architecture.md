@@ -163,8 +163,9 @@ of its last appearance.
 | `resource_added` | INFO | a resource the previous snapshot did not have (neither check runs on a first run) |
 | `format_gap` | WARN | tables found only in a format the entry does not select (a lower bound, see below) |
 | `missing_last_modified` | INFO | `overwrite_in_place` resources without a usable `last_modified`, versioned by hash ([ADR 0003](decisions/0003-snapshot-versioning.md)) |
-| `archived` | WARN / INFO | "archived" in the dataset or a selected resource's name or description: WARN when newly archived or on the first run, otherwise one aggregated INFO per dataset (see below) |
-| `rounded_values` | INFO | "rounded" in a selected resource's name, description or landed CSV head |
+| `archived` | WARN / INFO | "archived" in the dataset name or title, or in a selected resource's name or description: WARN when newly archived or on the first run, otherwise one aggregated INFO per dataset (see below) |
+| `description_mentions_archived` | INFO | the dataset description mentions archived tables; the matching sentences are in `details_json` |
+| `rounded_values` | INFO | "rounded" in a selected resource's name, description, or the head or tail of its landed CSV |
 
 - **`format_gap` is a lower bound; no finding does not mean full coverage.**
   Pairing one table across formats by name is unreliable: on the active
@@ -177,19 +178,35 @@ of its last appearance.
 - **Aggregated findings.** `missing_last_modified` and `rounded_values` give
   one finding per dataset; the affected resource count and `resource_id` list
   are in `details_json`. `rounded_values` records where each resource matched:
-  `name`, `description` or `file_head`.
+  `name`, `description`, `file_head` or `file_tail`. The end of the file is read
+  too because a footnote can sit there; the tail reader skips the region the
+  head reader covers, so a match is not reported twice.
 - **`archived` reports changes, not states.** "Archived" means no longer
   updated, not no value, and archived resources are landed on purpose
   ([ADR 0005](decisions/0005-prefer-csv-land-excel-too.md)). A WARN is raised
-  when a resource (or the dataset text) becomes archived compared with the
-  previous snapshot, and for everything archived on the first run. Otherwise
-  there is one INFO per dataset, "N archived resources landed, unchanged", with
-  the `resource_id` list in `details_json`. To compare, the snapshot stores
-  `archived` (per resource) and `dataset_archived` (the same on every row of a
-  dataset), because the previous state cannot be rebuilt from names alone.
-  Both columns are part of the table definition from the start:
-  `ckan_resource_snapshot` had not been created yet when they were added, so no
-  migration was needed.
+  when a resource (or the dataset name or title) becomes archived compared with
+  the previous snapshot, and for everything archived on the first run.
+  Otherwise there is one INFO per dataset, "N archived resources landed,
+  unchanged", with the `resource_id` list in `details_json`. To compare, the
+  snapshot stores `archived` (per resource) and `dataset_archived` (the same on
+  every row of a dataset), because the previous state cannot be rebuilt from
+  names alone.
+- **A description that mentions archived tables is not an archived dataset.**
+  `dataset_archived` is set from the dataset name and title only. ESDC's
+  description says "Table 5, 8, 17, and 24 will no longer be updated but will
+  remain as archived tables": some tables stopped, not the dataset, and the
+  resource names do not say archived, so the resource-level check cannot see
+  them. `description_mentions_archived` reports it as a separate INFO, with the
+  matching sentence in `details_json`, on every run. Rows written when
+  `dataset_archived` still looked at the description keep their value; a True
+  that is now False is not reported.
+- **`rounded_marker`.** The snapshot has `rounded_marker`, True when a marker
+  was found in the resource name, description, file head or file tail. **False
+  means no marker was found, not that the values are exact**: IRCC marks some
+  tables and not others, and an unmarked table may be rounded too. Bronze and
+  gold must not treat `rounded_marker = false` as safe to sum. Rows written
+  before the column existed hold NULL, meaning not checked; they are not
+  backfilled.
 - **Failing.** The notebook fails only when there is at least one ERROR, after
   the tables and the report are written.
 - **Re-running a check.** Checking the same `run_id` again must not duplicate
@@ -203,12 +220,19 @@ of its last appearance.
   the notebook runs a `DELETE` with the same predicate, because the page
   documents the empty-source case only for SQL `REPLACE WHERE`.
 - **Not verified.** The Delta write and the DDL have only been exercised by
-  unit tests, not in a workspace. Whether "rounded" appears in the head of the
-  IRCC CSV files is unknown; in the resource names it does.
+  unit tests, not in a workspace. Observed 2026-11-02: all 39 IRCC CSV files
+  were read and no file head matched; every match came from the resource name.
+  Whether the tails match has not been seen yet.
 
 ## 4. Transformation (planned)
 
 - **Bronze:** Auto Loader into streaming tables, one table per dataset.
+  Bronze must join `metadata.ckan_resource_current` on `resource_id` to carry
+  the resource name and the `rounded_marker` and `archived` flags, because
+  those facts are not in the file content. The resource id is the prefix of the
+  landed path (`<resource_id>_<name>` or `<resource_id>/<version>_<name>`, see
+  [ADR 0003](decisions/0003-snapshot-versioning.md)). Gold must not treat
+  `rounded_marker = false` as "safe to sum" (see the post-ingestion checks).
   Excel files are converted to CSV/Parquet first (Auto Loader has no Excel format).
   CSV is preferred; Excel is also landed in raw when a table has no CSV, and
   bronze uses the CSV when both exist
@@ -302,7 +326,10 @@ names; fix them when the first tables are built.
   comparison; no comment counts as a difference). The builder is pure: the
   current comments are its input, so it is unit-tested without Spark. A table
   that does not exist yet gets its comments inline in `CREATE TABLE`, and a
-  column an existing table lacks is reported as a warning, not commented. With
+  column an existing table lacks is added with its comment (see "Changing a
+  metadata table" below) instead of being commented. Only a catalog that does
+  not exist yet is skipped when reading comments; any other error is raised.
+  With
   `dry_run` the notebook prints only the statements that would run, then
   "N comments up to date".
 - **Changing a metadata table.** The metadata tables accumulate history that
@@ -315,9 +342,15 @@ names; fix them when the first tables are built.
   statement needs the `MODIFY` privilege
   ([ALTER TABLE column](https://docs.databricks.com/aws/en/sql/language-manual/sql-ref-syntax-ddl-alter-table-manage-column)).
   Also add the column to the `CREATE TABLE` definition, so new workspaces get
-  it. `catalog_setup.py` has no such migration yet: no column has had to be
-  added to an existing table. The check needs Spark, so the first migration goes
-  into the bootstrap notebook or a helper it calls, with tests for the guard.
+  it, and define it last so a migrated table keeps the column order of a new
+  one. `bootstrap_catalog` does the migration: it reads the columns of the
+  existing tables from `information_schema.columns` (that read is the
+  column-exists check), `build_comment_statements` lists the columns the code
+  defines that a table lacks, and `build_add_column_statements` turns them into
+  `ADD COLUMNS` statements with the column comment inline. A second run finds
+  nothing missing and adds nothing. Existing rows hold NULL and are not
+  backfilled. The first column added this way is `rounded_marker` of
+  `ckan_resource_snapshot`.
 - **Not confirmed in the docs.** The Free Edition limitations page does not
   mention lineage or tags, but does not say they are supported either: check in
   the workspace.

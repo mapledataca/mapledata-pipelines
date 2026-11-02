@@ -54,12 +54,19 @@ have no CSV and the CSV ones are archived
   on the live `package_show` metadata. Evidence: 17 of 17 CSV resources in
   `esdc_lmia_statistics_quarterly` and 4 of 4 in
   `esdc_lmia_statistics_annual`.
-- **Tables 5, 8, 17 and 24 are archived.** Observed 2026-11-02 on the live
-  `package_show` metadata. Evidence: the dataset description of both
-  `esdc_lmia_statistics_quarterly` and `esdc_lmia_statistics_annual` says
-  "Table 5, 8, 17, and 24 will no longer be updated but will remain as archived
-  tables". The `archived` check raises a WARN the first time and an INFO while
-  it stays unchanged.
+- **Tables 5, 8, 17 and 24 of the annual dataset are archived, and only the
+  dataset description says so.** Observed 2026-11-02 on the live `package_show`
+  metadata. Evidence: the description of both `esdc_lmia_statistics_quarterly`
+  and `esdc_lmia_statistics_annual` says "Table 5, 8, 17, and 24 will no longer
+  be updated but will remain as archived tables". The resource names and
+  descriptions do not say archived (no resource-level `archived` finding for
+  either dataset, and 0 of 24 XLSX and 0 of 4 CSV resources of the annual
+  dataset match), so the resource-level check cannot see these tables. Their
+  file names carry the table number, for example
+  `tfwp2023_annual_table_5_e.csv`. This means some tables stopped, not the
+  dataset: the `description_mentions_archived` check reports it as an INFO with
+  the sentence, and `dataset_archived` stays False (it looks at the dataset name
+  and title only).
 - **Most annual tables have no CSV.** Observed 2026-11-02 on the live
   `package_show` metadata. Evidence: `esdc_lmia_statistics_annual` has 4 CSV
   and 24 XLSX English resources. The `format_gap` check reports at least 20
