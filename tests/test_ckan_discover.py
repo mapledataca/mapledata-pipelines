@@ -449,4 +449,4 @@ def test_unregistered_drafts_skip_registered_and_respect_max_drafts():
 
 
 def test_catalog_setup_table_columns_match_snapshot_columns():
-    assert cs.SNAPSHOT_COLUMNS == cd.SNAPSHOT_COLUMNS
+    assert tuple((n, t) for n, t, _ in cs.SNAPSHOT_COLUMNS) == cd.SNAPSHOT_COLUMNS

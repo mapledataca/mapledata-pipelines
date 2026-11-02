@@ -25,8 +25,13 @@ def test_build_ddl_order_and_core_objects():
 def test_every_statement_is_idempotent():
     for sql in cs.build_ddl("mapledata", ["immigration", "housing"]):
         # Databricks does not allow IF NOT EXISTS together with OR REPLACE,
-        # so the view uses CREATE OR REPLACE VIEW.
-        assert "IF NOT EXISTS" in sql or sql.startswith("CREATE OR REPLACE VIEW")
+        # so views use CREATE OR REPLACE VIEW. Setting a comment can be repeated.
+        assert (
+            "IF NOT EXISTS" in sql
+            or sql.startswith("CREATE OR REPLACE VIEW")
+            or sql.startswith("COMMENT ON TABLE")
+            or (sql.startswith("ALTER TABLE") and " ALTER COLUMN " in sql and " COMMENT '" in sql)
+        )
 
 
 def test_metadata_schema_table_and_view_are_created_in_order():
@@ -41,8 +46,8 @@ def test_snapshot_table_defines_every_column_with_its_type():
     ddl = cs.build_ddl("mapledata", [])
     table = next(s for s in ddl if s.startswith("CREATE TABLE"))
     assert "`mapledata`.`metadata`.`ckan_dataset_snapshot`" in table
-    for name, kind in cs.SNAPSHOT_COLUMNS:
-        assert f"{name} {kind}" in table
+    for name, kind, _note in cs.SNAPSHOT_COLUMNS:
+        assert f"{name} {kind} COMMENT '" in table
     assert "run_id STRING" in table and "formats ARRAY<STRING>" in table
     assert "search_queries ARRAY<STRING>" in table
     assert "search_query STRING" not in table
@@ -59,6 +64,47 @@ def test_check_tables_and_view_are_created_after_the_metadata_schema():
     view = ddl.index(find(ddl, "CREATE OR REPLACE VIEW", "ckan_resource_current"))
     findings = ddl.index(find(ddl, "CREATE TABLE", "ingestion_findings"))
     assert schema < snap < view and schema < findings
+
+
+def test_every_metadata_table_is_listed_with_a_comment_for_each_column():
+    assert [name for name, _, _ in cs.METADATA_TABLES] == [
+        "ckan_dataset_snapshot", "ckan_resource_snapshot", "ingestion_findings",
+    ]
+    for _name, columns, table_comment in cs.METADATA_TABLES:
+        assert table_comment and "'" not in table_comment
+        for col, kind, note in columns:
+            assert col and kind and note and "'" not in note
+
+
+@pytest.mark.parametrize("table, columns, table_comment", cs.METADATA_TABLES)
+def test_comments_are_applied_to_each_table_and_column_after_it_exists(
+    table, columns, table_comment
+):
+    ddl = cs.build_ddl("mapledata", [])
+    full = f"`mapledata`.`metadata`.`{table}`"
+    created = ddl.index(find(ddl, "CREATE TABLE", table))
+    table_comment_sql = f"COMMENT ON TABLE {full} IS '{table_comment}'"
+    assert ddl.count(table_comment_sql) == 1 and ddl.index(table_comment_sql) > created
+    for col, _kind, note in columns:
+        sql = f"ALTER TABLE {full} ALTER COLUMN {col} COMMENT '{note}'"
+        assert ddl.count(sql) == 1 and ddl.index(sql) > created
+    # Exactly one statement per column and one for the table, nothing else.
+    own = [s for s in ddl if full in s and not s.startswith(("CREATE", "SELECT"))]
+    assert len(own) == len(columns) + 1
+
+
+def test_existing_tables_get_comments_without_a_drop():
+    ddl = cs.build_ddl("mapledata", ["immigration"])
+    assert not any("DROP" in s.upper() for s in ddl)
+    # The dataset snapshot table existed before it had column comments.
+    assert (
+        "ALTER TABLE `mapledata`.`metadata`.`ckan_dataset_snapshot` "
+        "ALTER COLUMN search_queries COMMENT 'Search keywords that found this dataset in this run'"
+    ) in ddl
+
+
+def test_build_ddl_is_deterministic_so_reruns_repeat_the_same_statements():
+    assert cs.build_ddl("mapledata", ["housing"]) == cs.build_ddl("mapledata", ["housing"])
 
 
 @pytest.mark.parametrize(

@@ -46,25 +46,39 @@ def _check(name: str, what: str) -> str:
     return name
 
 
-#: Columns of metadata.ckan_dataset_snapshot. ckan_discover.py keeps its own
-#: copy for writing rows; a test checks that the two agree.
+#: Columns of metadata.ckan_dataset_snapshot as (name, type, comment).
+#: ckan_discover.py keeps its own (name, type) copy for writing rows; a test
+#: checks that the two agree. Comments must not contain apostrophes.
 SNAPSHOT_COLUMNS = (
-    ("run_id", "STRING"),
-    ("discovered_at", "TIMESTAMP"),
-    ("base_url", "STRING"),
-    ("search_queries", "ARRAY<STRING>"),
-    ("ckan_id", "STRING"),
-    ("name", "STRING"),
-    ("title", "STRING"),
-    ("organization_name", "STRING"),
-    ("organization_title", "STRING"),
-    ("formats", "ARRAY<STRING>"),
-    ("resource_count", "INT"),
-    ("frequency", "STRING"),
-    ("coverage_start", "DATE"),
-    ("coverage_end", "DATE"),
-    ("metadata_modified", "STRING"),
-    ("is_registered", "BOOLEAN"),
+    ("run_id", "STRING", "Discovery run this row belongs to, e.g. 20261031T120000Z"),
+    ("discovered_at", "TIMESTAMP", "When the discovery ran (UTC); the same for every row of a run"),
+    ("base_url", "STRING", "CKAN Action API the search ran against"),
+    ("search_queries", "ARRAY<STRING>", "Search keywords that found this dataset in this run"),
+    ("ckan_id", "STRING", "CKAN package id of the dataset"),
+    ("name", "STRING", "CKAN package name (slug) of the dataset"),
+    ("title", "STRING", "English dataset title"),
+    ("organization_name", "STRING", "Code of the publishing organization, e.g. esdc-edsc"),
+    ("organization_title", "STRING", "English display name of the publishing organization"),
+    ("formats", "ARRAY<STRING>", "Distinct upper-case formats of the dataset resources"),
+    ("resource_count", "INT", "Number of resources the dataset lists"),
+    ("frequency", "STRING", "Update frequency as published, e.g. P1M or as_needed"),
+    ("coverage_start", "DATE", "Start of the period the data covers; null when not published"),
+    ("coverage_end", "DATE", "End of the period the data covers; null when not published"),
+    ("metadata_modified", "STRING", "Dataset metadata_modified as published; not a file version"),
+    ("is_registered", "BOOLEAN", "True when config/datasets.yml lists the dataset, whatever its status"),
+)
+
+#: Table comments, kept next to the column lists above.
+DATASET_SNAPSHOT_COMMENT = (
+    "Append-only CKAN dataset discovery results, one row per dataset per run"
+)
+RESOURCE_SNAPSHOT_COMMENT = (
+    "Append-only list of the resources CKAN publishes for each registered "
+    "dataset, one row per resource per checked ingestion run"
+)
+FINDINGS_COMMENT = (
+    "Findings of the post-ingestion checks, one row per finding per checked "
+    "ingestion run"
 )
 
 
@@ -98,6 +112,22 @@ FINDING_COLUMNS = (
     ("message", "STRING", "Human-readable description of the finding"),
     ("details_json", "STRING", "Check-specific details as a JSON object"),
 )
+
+#: Every table of the metadata schema: (name, columns, table comment).
+METADATA_TABLES = (
+    ("ckan_dataset_snapshot", SNAPSHOT_COLUMNS, DATASET_SNAPSHOT_COMMENT),
+    ("ckan_resource_snapshot", RESOURCE_SNAPSHOT_COLUMNS, RESOURCE_SNAPSHOT_COMMENT),
+    ("ingestion_findings", FINDING_COLUMNS, FINDINGS_COMMENT),
+)
+
+
+def _comment_statements(catalog: str, name: str, columns: tuple, comment: str) -> list:
+    """COMMENT ON TABLE plus one ALTER COLUMN ... COMMENT per column."""
+    table = f"`{catalog}`.`metadata`.`{name}`"
+    return [f"COMMENT ON TABLE {table} IS '{comment}'"] + [
+        f"ALTER TABLE {table} ALTER COLUMN {col} COMMENT '{note}'"
+        for col, _kind, note in columns
+    ]
 
 
 def _create_table(catalog: str, name: str, columns: tuple, comment: str) -> str:
@@ -136,10 +166,9 @@ def build_ddl(catalog: str, domains: Iterable[str]) -> list:
         f"COMMENT 'Cross-domain dimensions (geography, NOC, date)'",
         f"CREATE SCHEMA IF NOT EXISTS `{c}`.`metadata` "
         f"COMMENT 'Platform metadata, e.g. dataset discovery snapshots'",
-        f"CREATE TABLE IF NOT EXISTS `{c}`.`metadata`.`ckan_dataset_snapshot` ("
-        + ", ".join(f"{name} {kind}" for name, kind in SNAPSHOT_COLUMNS)
-        + ") COMMENT 'Append-only CKAN dataset discovery results, one row per "
-        "dataset per run'",
+        _create_table(
+            c, "ckan_dataset_snapshot", SNAPSHOT_COLUMNS, DATASET_SNAPSHOT_COMMENT
+        ),
         # CREATE OR REPLACE VIEW is idempotent; Databricks does not allow
         # IF NOT EXISTS together with OR REPLACE.
         f"CREATE OR REPLACE VIEW `{c}`.`metadata`.`ckan_dataset_current` "
@@ -148,11 +177,7 @@ def build_ddl(catalog: str, domains: Iterable[str]) -> list:
         f"QUALIFY row_number() OVER ("
         f"PARTITION BY ckan_id ORDER BY discovered_at DESC, run_id DESC) = 1",
         _create_table(
-            c,
-            "ckan_resource_snapshot",
-            RESOURCE_SNAPSHOT_COLUMNS,
-            "Append-only list of the resources CKAN publishes for each registered "
-            "dataset, one row per resource per checked ingestion run",
+            c, "ckan_resource_snapshot", RESOURCE_SNAPSHOT_COLUMNS, RESOURCE_SNAPSHOT_COMMENT
         ),
         f"CREATE OR REPLACE VIEW `{c}`.`metadata`.`ckan_resource_current` "
         f"COMMENT 'Latest snapshot row per resource_id; a removed resource keeps "
@@ -160,14 +185,13 @@ def build_ddl(catalog: str, domains: Iterable[str]) -> list:
         f"SELECT * FROM `{c}`.`metadata`.`ckan_resource_snapshot` "
         f"QUALIFY row_number() OVER ("
         f"PARTITION BY resource_id ORDER BY checked_at DESC, run_id DESC) = 1",
-        _create_table(
-            c,
-            "ingestion_findings",
-            FINDING_COLUMNS,
-            "Findings of the post-ingestion checks, one row per finding per "
-            "checked ingestion run",
-        ),
+        _create_table(c, "ingestion_findings", FINDING_COLUMNS, FINDINGS_COMMENT),
     ]
+    # CREATE TABLE IF NOT EXISTS leaves an existing table as it is, so the
+    # comments are applied again to every table. Setting a comment is idempotent,
+    # which lets comments change or arrive later without dropping a table.
+    for table, columns, comment in METADATA_TABLES:
+        statements += _comment_statements(c, table, columns, comment)
     for schema in domain_schemas(domains):
         domain, layer = schema.rsplit("_", 1)
         statements.append(
