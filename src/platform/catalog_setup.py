@@ -139,8 +139,9 @@ class CommentPlan:
                      comments that differ.
     up_to_date:      how many table and column comments already match.
     missing_columns: (table, column) pairs of existing tables that lack a column
-                     this module defines. No statement is emitted for them (it
-                     would fail); add the column first, see docs/architecture.md.
+                     this module defines. No comment statement is emitted for
+                     them (it would fail); build_add_column_statements adds the
+                     column, with its comment.
     """
 
     statements: list = field(default_factory=list)
@@ -226,6 +227,40 @@ def build_comment_statements(catalog: str, current: Optional[dict] = None) -> Co
                     f"ALTER TABLE {table} ALTER COLUMN {col} COMMENT '{note}'"
                 )
     return CommentPlan(statements, up_to_date, missing)
+
+
+def build_add_column_statements(catalog: str, missing_columns: Iterable) -> list:
+    """ALTER TABLE ... ADD COLUMNS for columns an existing table lacks.
+
+    missing_columns are the (table, column) pairs of CommentPlan.missing_columns.
+    They come from comparing the table with information_schema, so a column that
+    already exists is never added again: that comparison is the column-exists
+    guard (the documented ADD COLUMNS grammar has no IF NOT EXISTS and rejects a
+    duplicate name). Running it again finds nothing missing and emits nothing.
+
+    The column arrives with its comment, so no separate comment statement is
+    needed. Existing rows hold NULL in it (Delta cannot give an added column a
+    default and nothing is backfilled), which stays distinguishable from a value
+    written later. Columns are appended at the end of the table, so define a new
+    column last in its column list to keep new and migrated tables in the same
+    order. Nothing is ever dropped.
+    """
+    c = _check(catalog, "catalog")
+    defined = {
+        (table, col): (kind, note)
+        for table, columns, _comment in METADATA_TABLES
+        for col, kind, note in columns
+    }
+    statements = []
+    for table, col in missing_columns:
+        if (table, col) not in defined:
+            raise ValueError(f"{table}.{col} is not a column defined in METADATA_TABLES")
+        kind, note = defined[(table, col)]
+        statements.append(
+            f"ALTER TABLE `{c}`.`metadata`.`{table}` "
+            f"ADD COLUMNS ({col} {kind} COMMENT '{note}')"
+        )
+    return statements
 
 
 def _create_table(catalog: str, name: str, columns: tuple, comment: str) -> str:

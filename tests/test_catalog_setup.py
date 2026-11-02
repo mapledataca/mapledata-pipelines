@@ -184,6 +184,69 @@ def test_a_column_the_table_lacks_is_reported_not_commented():
     assert plan.up_to_date == TOTAL_COMMENTS - 1
 
 
+def test_a_missing_column_is_added_with_its_comment_and_nothing_else():
+    statements = cs.build_add_column_statements(
+        "mapledata", [("ckan_resource_snapshot", "archived")]
+    )
+    assert statements == [
+        "ALTER TABLE `mapledata`.`metadata`.`ckan_resource_snapshot` ADD COLUMNS "
+        "(archived BOOLEAN COMMENT "
+        "'True when the resource name or description says archived, in any case')"
+    ]
+    for sql in statements:
+        assert "DROP" not in sql.upper() and "DEFAULT" not in sql.upper()
+
+
+def test_add_column_statements_follow_the_order_of_the_missing_columns():
+    missing = [
+        ("ckan_dataset_snapshot", "title"),
+        ("ckan_resource_snapshot", "archived"),
+        ("ingestion_findings", "severity"),
+    ]
+    statements = cs.build_add_column_statements("mapledata", missing)
+    assert len(statements) == 3
+    for sql, (table, col) in zip(statements, missing):
+        assert f"`mapledata`.`metadata`.`{table}` ADD COLUMNS ({col} " in sql
+
+
+def test_nothing_is_added_when_no_column_is_missing():
+    assert cs.build_add_column_statements("mapledata", []) == []
+
+
+def test_the_migration_comes_from_the_plan_and_the_guard_stops_it_repeating():
+    current = desired_current()
+    del current["ckan_resource_snapshot"]["columns"]["archived"]
+    del current["ckan_resource_snapshot"]["columns"]["dataset_archived"]
+
+    plan = cs.build_comment_statements("mapledata", current)
+    first = cs.build_add_column_statements("mapledata", plan.missing_columns)
+    assert len(first) == 2
+    assert [c for _t, c in plan.missing_columns] == ["archived", "dataset_archived"]
+    # The new columns carry their comment inline, so no separate comment runs.
+    assert plan.statements == []
+
+    # After the columns exist (what information_schema reports on the next run),
+    # nothing is missing and nothing is added.
+    again = cs.build_comment_statements("mapledata", desired_current())
+    assert again.missing_columns == []
+    assert cs.build_add_column_statements("mapledata", again.missing_columns) == []
+
+
+def test_a_table_that_does_not_exist_yet_gets_no_migration():
+    # It is created with all its columns, so it is never in missing_columns.
+    plan = cs.build_comment_statements("mapledata", {})
+    assert cs.build_add_column_statements("mapledata", plan.missing_columns) == []
+
+
+def test_add_column_statements_reject_unknown_columns_and_unsafe_catalogs():
+    with pytest.raises(ValueError):
+        cs.build_add_column_statements("mapledata", [("ckan_dataset_snapshot", "no_such")])
+    with pytest.raises(ValueError):
+        cs.build_add_column_statements("mapledata", [("no_such_table", "title")])
+    with pytest.raises(ValueError):
+        cs.build_add_column_statements("Bad Catalog", [])
+
+
 def test_comment_plan_does_not_change_its_input_and_checks_the_catalog_name():
     current = commentless_current()
     snapshot = {k: {"comment": v["comment"], "columns": dict(v["columns"])} for k, v in current.items()}

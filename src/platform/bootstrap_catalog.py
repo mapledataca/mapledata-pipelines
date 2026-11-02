@@ -47,20 +47,18 @@ else:
     print(f"Catalog {catalog} does not exist yet: no table has comments to compare")
     current = {}
 comments = cs.build_comment_statements(catalog, current)
+# A column the code defines but an existing table lacks is added, never by
+# dropping the table: the column-exists check is the comparison above.
+migrations = cs.build_add_column_statements(catalog, comments.missing_columns)
 
 dry_run = dbutils.widgets.get("dry_run") == "true"
-for sql in statements + comments.statements:
+for sql in statements + migrations + comments.statements:
     print(("DRY RUN  " if dry_run else "EXECUTE  ") + sql)
     if not dry_run:
         spark.sql(sql)
 
 print(f"\n{comments.up_to_date} comments up to date")
-for table, column in comments.missing_columns:
-    print(
-        f"WARNING  {table} has no column {column}: add it with ALTER TABLE ... "
-        "ADD COLUMNS, see docs/architecture.md"
-    )
 print(
     f"Done: {len(statements)} statements for domains {sorted(domains)}, "
-    f"{len(comments.statements)} comment statements"
+    f"{len(migrations)} columns added, {len(comments.statements)} comment statements"
 )
