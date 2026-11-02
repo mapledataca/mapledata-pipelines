@@ -107,7 +107,7 @@ RESOURCE_SNAPSHOT_COLUMNS = (
     ("created", "STRING", "Resource creation timestamp as published"),
     ("selected", "BOOLEAN", "True when the registry entry selects this resource for ingestion"),
     ("archived", "BOOLEAN", "True when the resource name or description says archived, in any case"),
-    ("dataset_archived", "BOOLEAN", "True when the dataset name, title or description says archived; the same for every resource of the dataset"),
+    ("dataset_archived", "BOOLEAN", "True when the dataset name or title says archived, in any case; the same for every resource of the dataset"),
     ("landed_path", "STRING", "Path of the landed file relative to the dataset landing folder; null when nothing landed this run"),
 )
 

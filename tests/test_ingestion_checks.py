@@ -406,7 +406,7 @@ def test_archived_first_run_warns_for_every_archived_resource_and_the_dataset():
         res("a", "Old table (ARCHIVED)"),
         res("b", "Current table", description="This file is Archived."),
         res("c", "Current table"),
-        notes="Archived dataset; kept for reference.",
+        title="Archived dataset: kept for reference",
     )
     found = archived(spec, metadata)  # no previous snapshot
 
@@ -415,7 +415,7 @@ def test_archived_first_run_warns_for_every_archived_resource_and_the_dataset():
         (ic.ARCHIVED, ic.WARN, "a"),
         (ic.ARCHIVED, ic.WARN, "b"),
     ]
-    assert details(found[0]) == {"matched_in": ["notes"], "first_run": True}
+    assert details(found[0]) == {"matched_in": ["title"], "first_run": True}
     assert details(found[1]) == {"matched_in": ["name"], "first_run": True}
     assert details(found[2]) == {"matched_in": ["description"], "first_run": True}
     assert "first run" in found[1].message
@@ -427,19 +427,19 @@ def test_archived_unchanged_is_one_aggregated_info_per_dataset():
         res("a", "Old table [ARCHIVED]"),
         res("b", "Old table 2", description="archived"),
         res("c", "Current"),
-        notes="Tables 5 and 8 remain as archived tables.",
+        title="Old data (archived)",
     )
     found = archived(spec, metadata, previous_metadata=metadata)
 
     assert names(found) == [(ic.ARCHIVED, ic.INFO, None)]
     assert found[0].message == (
         "2 archived resources landed, unchanged; "
-        "the dataset description also says archived, unchanged"
+        "the dataset name or title also says archived, unchanged"
     )
     assert details(found[0]) == {
         "archived_resource_count": 2,
         "resource_ids": ["a", "b"],
-        "dataset_description_archived": True,
+        "dataset_title_archived": True,
     }
 
 
@@ -448,7 +448,7 @@ def test_archived_unchanged_without_a_dataset_level_match_says_only_resources():
     metadata = meta(res("a", "Old [archived]"), res("b", "Current"))
     (finding,) = archived(spec, metadata, previous_metadata=metadata)
     assert finding.message == "1 archived resources landed, unchanged"
-    assert details(finding)["dataset_description_archived"] is False
+    assert details(finding)["dataset_title_archived"] is False
 
 
 def test_archived_newly_archived_resource_warns_and_the_rest_stay_info():
@@ -475,11 +475,89 @@ def test_archived_newly_archived_resource_warns_and_the_rest_stay_info():
 def test_archived_dataset_that_newly_says_archived_warns_once():
     spec = make_spec()
     before = meta(res("a", "Table"))
-    now = meta(res("a", "Table"), notes="This dataset is now archived.")
+    now = meta(res("a", "Table"), title="Employers list (archived)")
     found = archived(spec, now, previous_metadata=before)
     assert names(found) == [(ic.ARCHIVED, ic.WARN, None)]
-    assert details(found[0]) == {"matched_in": ["notes"], "first_run": False}
+    assert details(found[0]) == {"matched_in": ["title"], "first_run": False}
     assert "newly" in found[0].message
+
+
+def test_dataset_name_counts_as_archived_too():
+    found = archived(make_spec(), meta(res("a", "Table"), name="old-data-archived"))
+    assert [(f.resource_id, details(f)["matched_in"]) for f in found] == [(None, ["name"])]
+
+
+ESDC_NOTES = (
+    "Quarterly LMIA statistics. The tables were reworked (TEER based).\n"
+    "As such, Table 5, 8, 17, and 24 will no longer be updated but will remain "
+    "as archived tables.\n\nFrequency of Publication: quarterly."
+)
+
+
+def test_a_description_mentioning_archived_tables_is_not_the_dataset_archived():
+    spec = make_spec()
+    metadata = meta(res("a", "Table 14"), notes=ESDC_NOTES)
+    # Not the dataset-level WARN, in either run.
+    assert archived(spec, metadata) == []
+    assert archived(spec, metadata, previous_metadata=metadata) == []
+    assert [r["dataset_archived"] for r in snapshot(spec, metadata)] == [False]
+
+
+def test_description_mentions_archived_reports_the_matching_sentence_as_info():
+    found = ic.check_description_mentions_archived(
+        ctx(make_spec(), meta(res("a", "Table 14"), notes=ESDC_NOTES))
+    )
+    assert names(found) == [(ic.DESCRIPTION_MENTIONS_ARCHIVED, ic.INFO, None)]
+    assert details(found[0]) == {
+        "field": "notes",
+        "matching_sentences": [
+            "As such, Table 5, 8, 17, and 24 will no longer be updated but will "
+            "remain as archived tables."
+        ],
+    }
+    assert "remain as archived tables" in found[0].message
+
+
+def test_description_mentions_archived_reads_every_language_and_keeps_each_sentence_once():
+    metadata = meta(
+        res("a"),
+        notes="Table 5 is Archived.",
+        notes_translated={"en": "Table 5 is Archived.", "fr": "Le tableau 6 est archived. Autre phrase."},
+    )
+    (finding,) = ic.check_description_mentions_archived(ctx(make_spec(), metadata))
+    assert details(finding)["matching_sentences"] == [
+        "Table 5 is Archived.",
+        "Le tableau 6 est archived.",
+    ]
+
+
+def test_description_mentions_archived_is_silent_without_a_mention_or_description():
+    assert ic.check_description_mentions_archived(ctx(make_spec(), meta(res("a"), notes="All current."))) == []
+    assert ic.check_description_mentions_archived(ctx(make_spec(), meta(res("a")))) == []
+
+
+def test_matching_sentences_collapse_space_cap_the_count_and_the_length():
+    import re
+    pattern = re.compile("archived", re.I)
+    text = "One archived.  Two\narchived   here! None. " + " ".join(f"s{i} archived." for i in range(10))
+    found = ic.matching_sentences([text], pattern)
+    # "Two" has no match; a line break ends a sentence; white space is collapsed.
+    assert found == [
+        "One archived.", "archived here!", "s0 archived.", "s1 archived.", "s2 archived.",
+    ]
+    long = ic.matching_sentences(["archived " + "x" * 600], pattern, max_length=50)
+    assert len(long) == 1 and len(long[0]) == 50
+    assert ic.matching_sentences([], pattern) == []
+
+
+def test_run_checks_includes_the_description_check_and_keeps_the_dataset_silent():
+    spec = make_spec()
+    found = ic.run_checks(
+        RUN, NOW, [spec],
+        {"ds": meta(res("a", "Table 14"), notes=ESDC_NOTES)},
+        {"ds": log()},
+    )
+    assert names(found) == [(ic.DESCRIPTION_MENTIONS_ARCHIVED, ic.INFO, None)]
 
 
 def test_archived_state_is_remembered_even_when_only_the_description_says_it():

@@ -54,6 +54,7 @@ RESOURCE_ADDED = "resource_added"
 FORMAT_GAP = "format_gap"
 MISSING_LAST_MODIFIED = "missing_last_modified"
 ARCHIVED = "archived"
+DESCRIPTION_MENTIONS_ARCHIVED = "description_mentions_archived"
 ROUNDED_VALUES = "rounded_values"
 
 #: Formats that can hold a data table. Documentation files (DOCX, PDF, ...) are
@@ -110,7 +111,10 @@ _ARCHIVED = re.compile("archived", re.IGNORECASE)
 _ROUNDED = re.compile("rounded", re.IGNORECASE)
 
 #: The fields searched for "archived" (and "rounded" in a resource).
-_DATASET_TEXT = ("name", "title", "notes")
+#: A dataset counts as archived by its name or title only: a description that
+#: mentions archived tables means some tables stopped, not the dataset.
+_DATASET_TEXT = ("name", "title")
+_DATASET_DESCRIPTION = "notes"
 _RESOURCE_TEXT = ("name", "description")
 
 
@@ -189,17 +193,23 @@ class Context:
 # ---------------------------------------------------------------------------
 
 
+def _text_values(item: dict, field: str) -> list:
+    """The text of a field, one string per language of a *_translated field."""
+    parts = []
+    value = item.get(field)
+    if isinstance(value, str):
+        parts.append(value)
+    translated = item.get(f"{field}_translated")
+    if isinstance(translated, dict):
+        parts.extend(v for v in translated.values() if isinstance(v, str))
+    return parts
+
+
 def _texts(item: dict, fields: Iterable) -> dict:
     """field -> all of its text, including every language of a *_translated field."""
     found = {}
     for field in fields:
-        parts = []
-        value = item.get(field)
-        if isinstance(value, str):
-            parts.append(value)
-        translated = item.get(f"{field}_translated")
-        if isinstance(translated, dict):
-            parts.extend(v for v in translated.values() if isinstance(v, str))
+        parts = _text_values(item, field)
         if parts:
             found[field] = " ".join(parts)
     return found
@@ -208,6 +218,28 @@ def _texts(item: dict, fields: Iterable) -> dict:
 def _matched_fields(item: dict, fields: Iterable, pattern: re.Pattern) -> list:
     """Names of the fields whose text matches the pattern."""
     return [f for f, text in _texts(item, fields).items() if pattern.search(text)]
+
+
+_SENTENCE_BREAK = re.compile(r"(?<=[.!?])\s+|\n+")
+
+
+def matching_sentences(
+    texts: Iterable, pattern: re.Pattern, limit: int = 5, max_length: int = 500
+) -> list:
+    """The sentences of the texts that match the pattern, in order, each once.
+
+    Sentences are cut after . ! ? and at line breaks, with the white space
+    collapsed. At most `limit` sentences are returned, each cut to max_length
+    characters, so a long description cannot swell the details of a finding.
+    """
+    found, seen = [], set()
+    for text in texts:
+        for sentence in _SENTENCE_BREAK.split(text):
+            sentence = " ".join(sentence.split())
+            if sentence and pattern.search(sentence) and sentence not in seen:
+                seen.add(sentence)
+                found.append(sentence[:max_length])
+    return found[:limit]
 
 
 # ---------------------------------------------------------------------------
@@ -241,10 +273,11 @@ def build_resource_snapshot(
     (not selected, or the download failed).
 
     archived records whether "archived" appears in the resource name or
-    description, and dataset_archived whether it appears in the dataset name,
-    title or description (the same value on every row of a dataset). The next
-    run reads them back from the previous snapshot, so check_archived can report
-    what changed instead of what is.
+    description, and dataset_archived whether it appears in the dataset name or
+    title (the same value on every row of a dataset). The dataset description is
+    left out: see check_description_mentions_archived. The next run reads both
+    flags back from the previous snapshot, so check_archived can report what
+    changed instead of what is.
     """
     resources = metadata.get("resources") or []
     selected_ids = {r.get("id") for r in ci.select_resources(metadata, spec)}
@@ -467,19 +500,22 @@ def check_archived(ctx: Context, previous: Optional[list] = None) -> list:
 
     "Archived" means "no longer updated", not "no value", and archived
     resources are landed on purpose. So this check does not repeat itself on
-    every run. It looks for "archived" (any case) in the dataset (name, title,
-    description) and in each selected resource (name, description), and
+    every run. It looks for "archived" (any case) in the dataset (name and
+    title only) and in each selected resource (name, description), and
     compares with the previous snapshot (previous), which stores the state:
 
     - WARN, one per resource, when a resource is newly archived: it was not
       archived in the previous snapshot (a resource that did not exist then
-      counts as not archived). Likewise one WARN for the dataset when its text
-      newly says archived.
+      counts as not archived). Likewise one WARN for the dataset when its name
+      or title newly says archived.
     - On the first run (no previous snapshot) everything archived is WARN,
       with first_run true in details_json.
     - Otherwise, when archived things are unchanged, one aggregated INFO per
       dataset ("N archived resources landed, unchanged") with the resource_id
       list and the count in details_json.
+
+    A dataset description that mentions archived tables is not "the dataset is
+    archived": it is reported by check_description_mentions_archived.
 
     Nothing is reported when nothing is archived.
     """
@@ -497,7 +533,7 @@ def check_archived(ctx: Context, previous: Optional[list] = None) -> list:
                 ctx.finding(
                     ARCHIVED,
                     WARN,
-                    "dataset name or description says it is archived"
+                    "dataset name or title says it is archived"
                     + (" (first run, nothing to compare with)" if first_run else " (newly)"),
                     matched_in=dataset_fields,
                     first_run=first_run,
@@ -530,7 +566,7 @@ def check_archived(ctx: Context, previous: Optional[list] = None) -> list:
     if unchanged or dataset_unchanged:
         message = f"{len(unchanged)} archived resources landed, unchanged"
         if dataset_unchanged:
-            message += "; the dataset description also says archived, unchanged"
+            message += "; the dataset name or title also says archived, unchanged"
         findings.append(
             ctx.finding(
                 ARCHIVED,
@@ -538,10 +574,39 @@ def check_archived(ctx: Context, previous: Optional[list] = None) -> list:
                 message,
                 archived_resource_count=len(unchanged),
                 resource_ids=sorted(unchanged),
-                dataset_description_archived=dataset_unchanged,
+                dataset_title_archived=dataset_unchanged,
             )
         )
     return findings
+
+
+def check_description_mentions_archived(ctx: Context) -> list:
+    """INFO: the dataset description mentions archived (any case).
+
+    A description such as "Table 5, 8, 17, and 24 will no longer be updated but
+    will remain as archived tables" means some tables stopped, not the dataset,
+    so it is not the dataset-level archived WARN. The resources of those tables
+    may not say archived in their own names, so the resource-level check cannot
+    see them either; this finding is where it shows up.
+
+    One finding per dataset and run, with the matching sentences (every
+    language of the description, each sentence once, capped) in details_json.
+    """
+    sentences = matching_sentences(
+        _text_values(ctx.metadata, _DATASET_DESCRIPTION), _ARCHIVED
+    )
+    if not sentences:
+        return []
+    return [
+        ctx.finding(
+            DESCRIPTION_MENTIONS_ARCHIVED,
+            INFO,
+            "the dataset description mentions archived tables or data: "
+            + sentences[0],
+            field=_DATASET_DESCRIPTION,
+            matching_sentences=sentences,
+        )
+    ]
 
 
 def check_rounded_values(
@@ -645,6 +710,7 @@ def run_checks(
         findings += check_format_gap(ctx)
         findings += check_missing_last_modified(ctx)
         findings += check_archived(ctx, previous)
+        findings += check_description_mentions_archived(ctx)
         findings += check_rounded_values(ctx, snapshot, read_head, landing_dir)
 
     order = {s: i for i, s in enumerate(SEVERITIES)}
