@@ -101,10 +101,9 @@ history; `metadata.ckan_dataset_current` keeps the newest row per `ckan_id`
 `candidate`, with a placeholder `purpose` to fill in); adding a dataset stays a
 manual, reviewed change to the registry.
 
-`CREATE TABLE IF NOT EXISTS` does not alter an existing table. While the
-snapshot table is in development, a schema change is applied by dropping the
-table (`DROP TABLE <catalog>.metadata.ckan_dataset_snapshot`) and re-running
-`bootstrap_catalog`; the history is disposable at this stage.
+`CREATE TABLE IF NOT EXISTS` does not alter an existing table, and the snapshot
+holds history, so a schema change adds columns to the table and never drops it
+(see "Changing a metadata table" in section 8).
 
 ### Update patterns
 
@@ -164,7 +163,7 @@ of its last appearance.
 | `resource_added` | INFO | a resource the previous snapshot did not have (neither check runs on a first run) |
 | `format_gap` | WARN | tables found only in a format the entry does not select (a lower bound, see below) |
 | `missing_last_modified` | INFO | `overwrite_in_place` resources without a usable `last_modified`, versioned by hash ([ADR 0003](decisions/0003-snapshot-versioning.md)) |
-| `archived` | WARN | "archived" in the dataset or a selected resource's name or description |
+| `archived` | WARN / INFO | "archived" in the dataset or a selected resource's name or description: WARN when newly archived or on the first run, otherwise one aggregated INFO per dataset (see below) |
 | `rounded_values` | INFO | "rounded" in a selected resource's name, description or landed CSV head |
 
 - **`format_gap` is a lower bound; no finding does not mean full coverage.**
@@ -179,6 +178,18 @@ of its last appearance.
   one finding per dataset; the affected resource count and `resource_id` list
   are in `details_json`. `rounded_values` records where each resource matched:
   `name`, `description` or `file_head`.
+- **`archived` reports changes, not states.** "Archived" means no longer
+  updated, not no value, and archived resources are landed on purpose
+  ([ADR 0005](decisions/0005-prefer-csv-land-excel-too.md)). A WARN is raised
+  when a resource (or the dataset text) becomes archived compared with the
+  previous snapshot, and for everything archived on the first run. Otherwise
+  there is one INFO per dataset, "N archived resources landed, unchanged", with
+  the `resource_id` list in `details_json`. To compare, the snapshot stores
+  `archived` (per resource) and `dataset_archived` (the same on every row of a
+  dataset), because the previous state cannot be rebuilt from names alone.
+  Both columns are part of the table definition from the start:
+  `ckan_resource_snapshot` had not been created yet when they were added, so no
+  migration was needed.
 - **Failing.** The notebook fails only when there is at least one ERROR, after
   the tables and the report are written.
 - **Re-running a check.** Checking the same `run_id` again must not duplicate
@@ -199,6 +210,9 @@ of its last appearance.
 
 - **Bronze:** Auto Loader into streaming tables, one table per dataset.
   Excel files are converted to CSV/Parquet first (Auto Loader has no Excel format).
+  CSV is preferred; Excel is also landed in raw when a table has no CSV, and
+  bronze uses the CSV when both exist
+  ([ADR 0005](decisions/0005-prefer-csv-land-excel-too.md)).
 - **Silver:** cleaning and conformed codes; **no province filter**.
   Record semantic changes as columns, e.g. LMIA `noc_version` (2011 vs 2021)
   and `includes_pr_only` (included from 2023Q4).
@@ -263,9 +277,30 @@ names; fix them when the first tables are built.
 - **Comment syntax.** `CREATE TABLE ... USING` takes `COMMENT '...'` after a
   column's type and a table-level `COMMENT '...'` clause
   ([CREATE TABLE](https://docs.databricks.com/aws/en/sql/language-manual/sql-ref-syntax-ddl-create-table-using)).
-  `catalog_setup.py` uses it for the post-ingestion check tables; keep
-  apostrophes out of comment text. `ckan_dataset_snapshot` has no column
-  comments yet.
+  `catalog_setup.py` uses it when it creates the tables in the `metadata`
+  schema. Because `CREATE TABLE IF NOT EXISTS` leaves an existing table alone,
+  it also applies `COMMENT ON TABLE ... IS '...'` and
+  `ALTER TABLE ... ALTER COLUMN <col> COMMENT '...'` for every table and column
+  on each run, so comments can be added or changed without dropping a table
+  ([COMMENT ON](https://docs.databricks.com/aws/en/sql/language-manual/sql-ref-syntax-ddl-comment),
+  [ALTER TABLE column](https://docs.databricks.com/aws/en/sql/language-manual/sql-ref-syntax-ddl-alter-table-manage-column)).
+  Both need the `MODIFY` privilege on the table. The pages do not say what a
+  repeated identical comment does; we rely on it simply setting the same value
+  again. Keep apostrophes out of comment text; the comments live in
+  `catalog_setup.py` and a test checks every table and column has one.
+- **Changing a metadata table.** The metadata tables accumulate history that
+  later runs compare against (for example `ckan_resource_snapshot` feeds the
+  added, removed and archived checks). **Add columns with idempotent
+  `ALTER TABLE ... ADD COLUMNS`, guarded by a column-exists check; never DROP a
+  metadata table that holds history.** The guard is needed because the
+  documented `ADD COLUMNS` grammar has no `IF NOT EXISTS` and requires the name
+  to be unique in the table; added columns are NULL for existing rows, and the
+  statement needs the `MODIFY` privilege
+  ([ALTER TABLE column](https://docs.databricks.com/aws/en/sql/language-manual/sql-ref-syntax-ddl-alter-table-manage-column)).
+  Also add the column to the `CREATE TABLE` definition, so new workspaces get
+  it. `catalog_setup.py` has no such migration yet: no column has had to be
+  added to an existing table. The check needs Spark, so the first migration goes
+  into the bootstrap notebook or a helper it calls, with tests for the guard.
 - **Not confirmed in the docs.** The Free Edition limitations page does not
   mention lineage or tags, but does not say they are supported either: check in
   the workspace.
