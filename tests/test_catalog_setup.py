@@ -223,6 +223,23 @@ def test_current_comment_queries_read_the_metadata_schema_of_the_catalog():
         cs.current_comments_queries("x; DROP CATALOG y")
 
 
+def test_catalog_exists_looks_for_the_exact_name_in_the_show_catalogs_result():
+    names = ["system", "mapledata", "samples"]
+    assert cs.catalog_exists(names, "mapledata") is True
+    assert cs.catalog_exists(names, "maple") is False        # no partial match
+    assert cs.catalog_exists([], "mapledata") is False
+    assert cs.catalog_exists(iter(names), "samples") is True  # any iterable
+
+
+def test_catalog_exists_rejects_an_unsafe_catalog_name():
+    with pytest.raises(ValueError):
+        cs.catalog_exists(["mapledata"], "map-le; drop")
+
+
+def test_catalog_exists_documents_the_permission_caveat():
+    assert "privileges" in cs.catalog_exists.__doc__
+
+
 def test_build_ddl_is_deterministic_so_reruns_repeat_the_same_statements():
     assert cs.build_ddl("mapledata", ["housing"]) == cs.build_ddl("mapledata", ["housing"])
 

@@ -148,6 +148,19 @@ class CommentPlan:
     missing_columns: list = field(default_factory=list)
 
 
+def catalog_exists(catalog_names: Iterable, catalog: str) -> bool:
+    """True when `catalog` is among the names SHOW CATALOGS returned.
+
+    Reading the comments of a catalog that does not exist yet fails, so the
+    bootstrap asks first and skips the read only in that case. Any other error
+    is not hidden. The SHOW CATALOGS documentation does not say whether the
+    list is filtered by privileges; a catalog the user cannot see counts as
+    missing here, and the CREATE CATALOG IF NOT EXISTS that follows is what
+    then exposes the access problem.
+    """
+    return _check(catalog, "catalog") in set(catalog_names)
+
+
 def current_comments_queries(catalog: str) -> tuple:
     """SQL that reads the current comments of the metadata tables.
 

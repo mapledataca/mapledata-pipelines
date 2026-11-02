@@ -35,14 +35,16 @@ statements = cs.build_ddl(catalog, domains)
 
 # Read the comments the metadata tables have now, before any DDL runs. Re-applying
 # an unchanged comment still creates a Delta version, so only differences run.
-try:
+# Only a catalog that does not exist yet is skipped; any other error is raised.
+catalog_names = [row[0] for row in spark.sql("SHOW CATALOGS").collect()]
+if cs.catalog_exists(catalog_names, catalog):
     tables_sql, columns_sql = cs.current_comments_queries(catalog)
     current = cs.parse_current_comments(
         [(r[0], r[1]) for r in spark.sql(tables_sql).collect()],
         [(r[0], r[1], r[2]) for r in spark.sql(columns_sql).collect()],
     )
-except Exception as exc:  # e.g. the catalog does not exist yet: no table has comments
-    print(f"No current comments read ({type(exc).__name__}); assuming no table exists")
+else:
+    print(f"Catalog {catalog} does not exist yet: no table has comments to compare")
     current = {}
 comments = cs.build_comment_statements(catalog, current)
 
