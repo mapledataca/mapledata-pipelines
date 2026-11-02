@@ -33,9 +33,24 @@ CKAN `package_show` on `https://open.canada.ca/data/api/action`. See
 
 ## Formats
 
-CSV is ingested ([ADR 0004](../decisions/0004-csv-first.md)). The CSV files
-cover the province-level study-permit tables. The Dec 31 stock tables are
-XLSX-only.
+CSV is preferred, and Excel is also ingested where tables are not published as
+CSV ([ADR 0005](../decisions/0005-prefer-csv-land-excel-too.md), which
+supersedes [ADR 0004](../decisions/0004-csv-first.md)). Registry formats:
+`[CSV, XLSX]` for permanent residents and work permits, `[CSV, XLSX, XLS]` for
+study permits, `[CSV]` for TR→PR, where the `format_gap` check found nothing.
+The CSV files cover the province-level study-permit tables. The Dec 31 stock
+tables are XLSX-only.
+
+The English XLSX and XLS resources have no `last_modified` either (observed
+2026-11-02 on the live `package_show` metadata): permanent residents 0 of 18
+XLSX, study permits 0 of 9 XLSX and 0 of 3 XLS, work permits 0 of 19 XLSX. They
+are downloaded on every run and versioned by content hash, like the CSV files.
+
+Why the study permit XLS resources are ingested although they are archived:
+"archived" means no longer updated, not no value. Two of them (holders by
+country of citizenship, and by census metropolitan area) have no similarly named
+CSV or XLSX resource, so they are probably the only copy of that history. See
+the quirk below and ADR 0005.
 
 ## Known quirks
 
@@ -50,7 +65,20 @@ XLSX-only.
   tables only as XLSX for `ircc_permanent_residents_monthly`, at least 3 for
   `ircc_study_permit_holders_monthly` and at least 6 for
   `ircc_work_permit_holders_monthly`. These are lower bounds; no finding for
-  `ircc_tr_to_pr_transition_monthly` does not prove full coverage.
+  `ircc_tr_to_pr_transition_monthly` does not prove full coverage. XLSX is now
+  selected for the three datasets with findings (ADR 0005), so `format_gap` no
+  longer reports them.
+- **Some resources are marked "[ARCHIVED]" in their names.** Observed
+  2026-11-02 on the live `package_show` metadata. Evidence:
+  `ircc_study_permit_holders_monthly` has 3 of 3 XLS resources
+  (`IRCC_M_TRStudy_0004_E.xls`, `0005` and `0006`, created 2017-04-12) and 1 of
+  9 XLSX resources (`IRCC_M_TRStudy_0007_E.xlsx`); no other active IRCC dataset
+  has any. For `0004` (citizenship) and `0005` (census metropolitan area) the
+  closest CSV or XLSX name has a text similarity of only 0.59 to 0.73; `0006`
+  (study level, calendar year) has similar tables with a different time
+  dimension. They are landed on purpose (ADR 0005). The `archived` check reports
+  changes: a WARN when a resource becomes archived or on the first run,
+  otherwise one INFO per dataset.
 - **Some datasets have finer-grained files.** Observed on or before
   2026-10-31. Evidence: permanent residents has a census-subdivision file (`ODP-PR-CSD.csv`); study
   permits have DLI-level tables.
@@ -62,6 +90,9 @@ XLSX-only.
 
 - Province-level CSV coverage for work permits, TR→PR and permanent residents
   has not been checked yet.
+- How are the CSV and XLSX versions of one table paired, so that bronze can use
+  the CSV when both exist (ADR 0005)? Their names rarely match: permanent
+  residents has 16 CSV and 18 XLSX resources and no matching pair by name.
 - Does "rounded" appear in the first bytes of the landed CSV files? It appears
   in the resource names; the file-head match of `rounded_values` has not run on
   landed IRCC files yet.

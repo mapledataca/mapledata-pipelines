@@ -76,11 +76,14 @@ datasets:
     purpose: >
       Annual LMIA statistics tables: longer history (from 2016) to complement
       the quarterly tables.
-    formats: [CSV]
+    formats: [CSV, XLSX]
     description: >
       ESDC TFWP LMIA Statistics, annual tables. Every CSV resource has a
       last_modified (4 of 4 on 2026-10-31), later than its creation date, so
-      resources are replaced in place; versions use last_modified.
+      resources are replaced in place; versions use last_modified. XLSX is
+      selected too (ADR 0005): the 4 CSV tables (5, 8, 17, 24) are the archived
+      ones, and at least 20 tables are only published as XLSX. The XLSX
+      resources carry last_modified as well (24 of 24 on 2026-11-02).
 
   - key: ircc_permanent_residents_monthly
     domain: immigration
@@ -91,11 +94,14 @@ datasets:
       Permanent residents by province/territory, immigration category and
       country of citizenship: the core metrics on who immigrates to Manitoba
       and from where.
-    formats: [CSV]
+    formats: [CSV, XLSX]
     description: >
       IRCC Permanent Residents - Monthly IRCC Updates. Every CSV table is
       ingested (no name filter). Confirmed: updated in place; resources have no
-      last_modified, so versions are content hashes (sha256-...).
+      last_modified, so versions are content hashes (sha256-...). XLSX is
+      selected too (ADR 0005): at least 2 tables are only published as XLSX.
+      The XLSX resources have no last_modified either (0 of 18 on 2026-11-02),
+      so they are downloaded on every run.
 
   - key: ircc_study_permit_holders_monthly
     domain: immigration
@@ -105,11 +111,17 @@ datasets:
     purpose: >
       Study permit holders by province, study level and country of
       citizenship: international student numbers for Manitoba.
-    formats: [CSV]
+    formats: [CSV, XLSX, XLS]
     description: >
       IRCC Temporary Residents - Study Permit Holders (monthly). Confirmed:
       updated in place; resources have no last_modified, so versions are
-      content hashes (sha256-...).
+      content hashes (sha256-...). XLSX is selected too (ADR 0005): at least 3
+      tables are only published as XLSX. XLS is selected as well: its 3
+      resources are marked [ARCHIVED] (no longer updated), but two of them
+      (citizenship, census metropolitan area) have no similarly named CSV or
+      XLSX resource, so they are probably the only copy of that history. The
+      XLSX and XLS resources have no last_modified either (0 of 9 and 0 of 3 on
+      2026-11-02), so they are downloaded on every run.
 
   - key: ircc_work_permit_holders_monthly
     domain: immigration
@@ -119,11 +131,14 @@ datasets:
     purpose: >
       TFWP and International Mobility Program work permit holders by province,
       occupational skill level and country: temporary workers in Manitoba.
-    formats: [CSV]
+    formats: [CSV, XLSX]
     description: >
       IRCC Temporary Residents - Work Permit Holders (monthly). Confirmed:
       updated in place; resources have no last_modified, so versions are
-      content hashes (sha256-...).
+      content hashes (sha256-...). XLSX is selected too (ADR 0005): at least 6
+      tables are only published as XLSX. The XLSX resources have no
+      last_modified either (0 of 19 on 2026-11-02), so they are downloaded on
+      every run.
 
   - key: ircc_tr_to_pr_transition_monthly
     domain: immigration

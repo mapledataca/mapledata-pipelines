@@ -1,6 +1,6 @@
 # 0004. Ingest CSV first
 
-- Status: Accepted
+- Status: Superseded by [0005](0005-prefer-csv-land-excel-too.md)
 - Date: 2026-11-02
 
 ## Context

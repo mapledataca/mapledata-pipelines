@@ -12,7 +12,8 @@ Consequences.
 | [0001](0001-landing-zone-ingestion.md) | Ingest through a landing zone | Accepted |
 | [0002](0002-national-scope.md) | National scope in ingestion, bronze and silver | Accepted |
 | [0003](0003-snapshot-versioning.md) | Snapshot versioning of landed files | Accepted |
-| [0004](0004-csv-first.md) | Ingest CSV first | Accepted |
+| [0004](0004-csv-first.md) | Ingest CSV first | Superseded by 0005 |
+| [0005](0005-prefer-csv-land-excel-too.md) | Prefer CSV, and also land Excel when a table has no CSV | Accepted |
 
 Source-specific findings (quirks, update patterns, open questions) live in
 [docs/sources/](../sources/).
