@@ -48,6 +48,45 @@ def test_snapshot_table_defines_every_column_with_its_type():
     assert "search_query STRING" not in table
 
 
+def find(ddl, prefix, text):
+    return next(s for s in ddl if s.startswith(prefix) and text in s)
+
+
+def test_check_tables_and_view_are_created_after_the_metadata_schema():
+    ddl = cs.build_ddl("mapledata", [])
+    schema = next(i for i, s in enumerate(ddl) if s.startswith("CREATE SCHEMA") and "`metadata`" in s)
+    snap = ddl.index(find(ddl, "CREATE TABLE", "ckan_resource_snapshot"))
+    view = ddl.index(find(ddl, "CREATE OR REPLACE VIEW", "ckan_resource_current"))
+    findings = ddl.index(find(ddl, "CREATE TABLE", "ingestion_findings"))
+    assert schema < snap < view and schema < findings
+
+
+@pytest.mark.parametrize(
+    "table, columns",
+    [
+        ("ckan_resource_snapshot", cs.RESOURCE_SNAPSHOT_COLUMNS),
+        ("ingestion_findings", cs.FINDING_COLUMNS),
+    ],
+)
+def test_check_tables_comment_the_table_and_every_column(table, columns):
+    statement = find(cs.build_ddl("mapledata", []), "CREATE TABLE", table)
+    assert f"`mapledata`.`metadata`.`{table}`" in statement
+    assert statement.startswith("CREATE TABLE IF NOT EXISTS")
+    for name, kind, note in columns:
+        assert f"{name} {kind} COMMENT '{note}'" in statement
+        assert note and "'" not in note  # an apostrophe would break the literal
+    # One COMMENT per column, plus the table comment after the column list.
+    assert statement.count(" COMMENT '") == len(columns) + 1
+    assert statement.rstrip().endswith("'") and ") COMMENT '" in statement
+
+
+def test_resource_current_view_keeps_latest_row_per_resource_id():
+    view = find(cs.build_ddl("mapledata", []), "CREATE OR REPLACE VIEW", "ckan_resource_current")
+    assert "FROM `mapledata`.`metadata`.`ckan_resource_snapshot`" in view
+    assert "QUALIFY row_number() OVER (PARTITION BY resource_id ORDER BY checked_at DESC, run_id DESC) = 1" in view
+    assert "COMMENT '" in view
+
+
 def test_current_view_keeps_latest_row_per_ckan_id():
     ddl = cs.build_ddl("mapledata", [])
     view = next(s for s in ddl if s.startswith("CREATE OR REPLACE VIEW"))

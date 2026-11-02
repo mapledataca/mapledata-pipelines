@@ -13,7 +13,10 @@ Structure created
     ├── shared                  schema for cross-domain dimensions
     ├── metadata                schema for platform metadata
     │   ├── ckan_dataset_snapshot (table)  append-only discovery results
-    │   └── ckan_dataset_current  (view)   latest row per ckan_id
+    │   ├── ckan_dataset_current  (view)   latest row per ckan_id
+    │   ├── ckan_resource_snapshot (table) resources CKAN lists, per checked run
+    │   ├── ckan_resource_current (view)   latest row per resource_id
+    │   └── ingestion_findings    (table)  post-ingestion check findings
     └── <domain>_bronze / _silver / _gold   one set per domain
 
 The domains are read from config/datasets.yml, so adding a dataset with a new
@@ -65,6 +68,47 @@ SNAPSHOT_COLUMNS = (
 )
 
 
+#: Columns of metadata.ckan_resource_snapshot as (name, type, comment).
+#: ingestion_checks.py keeps its own (name, type) copy for writing rows; a test
+#: checks that the two agree. Comments must not contain apostrophes.
+RESOURCE_SNAPSHOT_COLUMNS = (
+    ("run_id", "STRING", "Ingestion run this snapshot belongs to, e.g. 20261031T120000Z"),
+    ("checked_at", "TIMESTAMP", "When the post-ingestion checks ran (UTC)"),
+    ("dataset_key", "STRING", "Registry key of the dataset in config/datasets.yml"),
+    ("ckan_id", "STRING", "CKAN package id of the dataset"),
+    ("resource_id", "STRING", "CKAN resource id; stable even when the file is replaced"),
+    ("name", "STRING", "English resource name as published"),
+    ("language", "ARRAY<STRING>", "Languages the publisher tags the resource with"),
+    ("format", "STRING", "File format as published, e.g. CSV or XLSX"),
+    ("url", "STRING", "Download URL of the file"),
+    ("last_modified", "STRING", "Resource last_modified as published; often empty"),
+    ("created", "STRING", "Resource creation timestamp as published"),
+    ("selected", "BOOLEAN", "True when the registry entry selects this resource for ingestion"),
+    ("landed_path", "STRING", "Path of the landed file relative to the dataset landing folder; null when nothing landed this run"),
+)
+
+#: Columns of metadata.ingestion_findings as (name, type, comment).
+FINDING_COLUMNS = (
+    ("run_id", "STRING", "Ingestion run that was checked"),
+    ("checked_at", "TIMESTAMP", "When the post-ingestion checks ran (UTC)"),
+    ("dataset_key", "STRING", "Registry key of the dataset in config/datasets.yml"),
+    ("resource_id", "STRING", "CKAN resource id; null for a finding about the whole dataset"),
+    ("check_name", "STRING", "Check that produced the finding, e.g. download_failed"),
+    ("severity", "STRING", "ERROR, WARN or INFO"),
+    ("message", "STRING", "Human-readable description of the finding"),
+    ("details_json", "STRING", "Check-specific details as a JSON object"),
+)
+
+
+def _create_table(catalog: str, name: str, columns: tuple, comment: str) -> str:
+    """CREATE TABLE IF NOT EXISTS with a table comment and a comment per column."""
+    cols = ", ".join(f"{col} {kind} COMMENT '{note}'" for col, kind, note in columns)
+    return (
+        f"CREATE TABLE IF NOT EXISTS `{catalog}`.`metadata`.`{name}` ({cols}) "
+        f"COMMENT '{comment}'"
+    )
+
+
 def domain_schemas(domains: Iterable[str]) -> list:
     """Schema names for the given domains, e.g. ["immigration_bronze", ...].
 
@@ -103,6 +147,26 @@ def build_ddl(catalog: str, domains: Iterable[str]) -> list:
         f"SELECT * FROM `{c}`.`metadata`.`ckan_dataset_snapshot` "
         f"QUALIFY row_number() OVER ("
         f"PARTITION BY ckan_id ORDER BY discovered_at DESC, run_id DESC) = 1",
+        _create_table(
+            c,
+            "ckan_resource_snapshot",
+            RESOURCE_SNAPSHOT_COLUMNS,
+            "Append-only list of the resources CKAN publishes for each registered "
+            "dataset, one row per resource per checked ingestion run",
+        ),
+        f"CREATE OR REPLACE VIEW `{c}`.`metadata`.`ckan_resource_current` "
+        f"COMMENT 'Latest snapshot row per resource_id; a removed resource keeps "
+        f"the run_id of its last appearance' AS "
+        f"SELECT * FROM `{c}`.`metadata`.`ckan_resource_snapshot` "
+        f"QUALIFY row_number() OVER ("
+        f"PARTITION BY resource_id ORDER BY checked_at DESC, run_id DESC) = 1",
+        _create_table(
+            c,
+            "ingestion_findings",
+            FINDING_COLUMNS,
+            "Findings of the post-ingestion checks, one row per finding per "
+            "checked ingestion run",
+        ),
     ]
     for schema in domain_schemas(domains):
         domain, layer = schema.rsplit("_", 1)
