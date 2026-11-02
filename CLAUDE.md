@@ -28,6 +28,8 @@ All tests must pass before committing.
 - `src/platform/catalog_setup.py`: builds idempotent Unity Catalog DDL.
 - `src/platform/bootstrap_catalog.py`: Databricks notebook that executes the DDL.
 - `tools/`: development Databricks notebooks (e.g. `run_tests`, `discover_datasets`); not run as job tasks.
+- `docs/sources/`: one file per data source: update pattern, quirks (with date and evidence), open questions.
+- `docs/decisions/`: architecture decision records (ADRs); see its `README.md` for the list.
 - `tests/`: pytest suites; `conftest.py` puts `src/ingest` and `src/platform` on `sys.path`.
 
 ## Rules
@@ -58,6 +60,9 @@ All tests must pass before committing.
    Catalog tags must be written in the DDL or pipeline code, never only in the
    Databricks UI. Renaming a catalog, schema, table, view or column loses
    its lineage, so say so before doing it.
+10. **Record quirks and decisions.** When you find a new source quirk, update
+    `docs/sources/<source>.md`. When a design decision changes, add a new ADR
+    (never edit an accepted ADR's decision; supersede it).
 
 ## Databricks guidance
 

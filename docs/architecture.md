@@ -3,6 +3,10 @@
 This document records how the platform is built and **why**. Update it
 whenever a design decision changes.
 
+Related: individual decisions with their context and alternatives are in
+[decisions/](decisions/); what each data source is like (update patterns,
+quirks, open questions) is in [sources/](sources/).
+
 ## 1. Scope
 
 - **National data, provincial presentation.** Ingestion, bronze and silver
@@ -43,9 +47,12 @@ mapledata                          catalog
 
 ### Pattern
 
-Databricks' guide *Ingest data from an API in pipelines* lists three custom
-patterns when no Lakeflow Connect managed connector exists. We use
-**scheduled job + landing volume + Auto Loader** because:
+Databricks' guide
+[*Ingest data from an API in pipelines*](https://docs.databricks.com/aws/en/ldp/api-ingestion)
+lists three custom patterns when no Lakeflow Connect managed connector exists.
+We use its pattern 3, **scheduled job + landing volume + Auto Loader**: a
+scheduled job writes files to a Unity Catalog volume and the pipeline ingests
+them with Auto Loader. We chose it because:
 
 - the sources publish **files** (CSV/XLSX), not record streams;
 - raw files can be **replayed** if downstream logic changes;
@@ -113,6 +120,10 @@ a file's content is replaced, which would skip the update without any sign.
 The cost is that a resource without `last_modified` (the IRCC monthly datasets)
 is downloaded again on every run, because the hash needs the bytes; a resource
 with `last_modified` is still skipped from metadata alone.
+
+Rationale and consequences: [ADR 0003](decisions/0003-snapshot-versioning.md).
+Per-source behaviour: [open_canada.md](sources/open_canada.md),
+[esdc_lmia.md](sources/esdc_lmia.md), [ircc_monthly.md](sources/ircc_monthly.md).
 
 ### Reliability rules
 
