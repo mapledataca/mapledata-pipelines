@@ -25,13 +25,16 @@ def test_build_ddl_order_and_core_objects():
 def test_every_statement_is_idempotent():
     for sql in cs.build_ddl("mapledata", ["immigration", "housing"]):
         # Databricks does not allow IF NOT EXISTS together with OR REPLACE,
-        # so views use CREATE OR REPLACE VIEW. Setting a comment can be repeated.
-        assert (
-            "IF NOT EXISTS" in sql
-            or sql.startswith("CREATE OR REPLACE VIEW")
-            or sql.startswith("COMMENT ON TABLE")
-            or (sql.startswith("ALTER TABLE") and " ALTER COLUMN " in sql and " COMMENT '" in sql)
-        )
+        # so views use CREATE OR REPLACE VIEW.
+        assert "IF NOT EXISTS" in sql or sql.startswith("CREATE OR REPLACE VIEW")
+
+
+def test_build_ddl_leaves_comments_of_existing_tables_to_the_comment_plan():
+    # Re-applying an unchanged comment creates a Delta version, so build_ddl
+    # emits none; build_comment_statements applies only the differences.
+    ddl = cs.build_ddl("mapledata", ["immigration"])
+    assert not any(s.startswith(("COMMENT ON", "ALTER TABLE")) for s in ddl)
+    assert not any("DROP" in s.upper() for s in ddl)
 
 
 def test_metadata_schema_table_and_view_are_created_in_order():
@@ -76,31 +79,148 @@ def test_every_metadata_table_is_listed_with_a_comment_for_each_column():
             assert col and kind and note and "'" not in note
 
 
-@pytest.mark.parametrize("table, columns, table_comment", cs.METADATA_TABLES)
-def test_comments_are_applied_to_each_table_and_column_after_it_exists(
-    table, columns, table_comment
-):
-    ddl = cs.build_ddl("mapledata", [])
-    full = f"`mapledata`.`metadata`.`{table}`"
-    created = ddl.index(find(ddl, "CREATE TABLE", table))
-    table_comment_sql = f"COMMENT ON TABLE {full} IS '{table_comment}'"
-    assert ddl.count(table_comment_sql) == 1 and ddl.index(table_comment_sql) > created
-    for col, _kind, note in columns:
-        sql = f"ALTER TABLE {full} ALTER COLUMN {col} COMMENT '{note}'"
-        assert ddl.count(sql) == 1 and ddl.index(sql) > created
-    # Exactly one statement per column and one for the table, nothing else.
-    own = [s for s in ddl if full in s and not s.startswith(("CREATE", "SELECT"))]
-    assert len(own) == len(columns) + 1
+def desired_current():
+    """The current comments of tables that exist and already match the code."""
+    return {
+        name: {"comment": comment, "columns": {col: note for col, _k, note in columns}}
+        for name, columns, comment in cs.METADATA_TABLES
+    }
 
 
-def test_existing_tables_get_comments_without_a_drop():
-    ddl = cs.build_ddl("mapledata", ["immigration"])
-    assert not any("DROP" in s.upper() for s in ddl)
+def commentless_current():
+    """Tables that exist but have no comment anywhere."""
+    return {
+        name: {"comment": None, "columns": {col: None for col, _k, _n in columns}}
+        for name, columns, _comment in cs.METADATA_TABLES
+    }
+
+
+TOTAL_COMMENTS = sum(1 + len(columns) for _n, columns, _c in cs.METADATA_TABLES)
+SNAPSHOT = "`mapledata`.`metadata`.`ckan_dataset_snapshot`"
+
+
+def test_unchanged_comments_produce_no_statements():
+    plan = cs.build_comment_statements("mapledata", desired_current())
+    assert plan.statements == []
+    assert plan.up_to_date == TOTAL_COMMENTS == 3 + 16 + 15 + 8
+    assert plan.missing_columns == []
+
+
+def test_tables_that_do_not_exist_get_no_comment_statements():
+    # They are created with their comments inline, so nothing is left to apply.
+    for current in (None, {}):
+        plan = cs.build_comment_statements("mapledata", current)
+        assert (plan.statements, plan.up_to_date, plan.missing_columns) == ([], 0, [])
+
+
+def test_tables_without_any_comment_get_every_comment_and_no_drop():
+    plan = cs.build_comment_statements("mapledata", commentless_current())
+    assert len(plan.statements) == TOTAL_COMMENTS and plan.up_to_date == 0
+    assert not any("DROP" in s.upper() for s in plan.statements)
     # The dataset snapshot table existed before it had column comments.
     assert (
-        "ALTER TABLE `mapledata`.`metadata`.`ckan_dataset_snapshot` "
-        "ALTER COLUMN search_queries COMMENT 'Search keywords that found this dataset in this run'"
-    ) in ddl
+        f"ALTER TABLE {SNAPSHOT} ALTER COLUMN search_queries COMMENT "
+        "'Search keywords that found this dataset in this run'"
+    ) in plan.statements
+    assert f"COMMENT ON TABLE {SNAPSHOT} IS '{cs.DATASET_SNAPSHOT_COMMENT}'" in plan.statements
+
+
+@pytest.mark.parametrize("table, columns, table_comment", cs.METADATA_TABLES)
+def test_each_table_and_column_gets_exactly_one_statement_when_missing(
+    table, columns, table_comment
+):
+    current = desired_current()
+    current[table] = {"comment": None, "columns": {col: None for col, _k, _n in columns}}
+    plan = cs.build_comment_statements("mapledata", current)
+
+    full = f"`mapledata`.`metadata`.`{table}`"
+    assert plan.statements[0] == f"COMMENT ON TABLE {full} IS '{table_comment}'"
+    assert plan.statements[1:] == [
+        f"ALTER TABLE {full} ALTER COLUMN {col} COMMENT '{note}'" for col, _k, note in columns
+    ]
+    assert plan.up_to_date == TOTAL_COMMENTS - (1 + len(columns))
+
+
+def test_only_the_differing_comments_are_applied():
+    current = desired_current()
+    current["ckan_dataset_snapshot"]["columns"]["title"] = "An old description"
+    current["ingestion_findings"]["comment"] = "An old table comment"
+    plan = cs.build_comment_statements("mapledata", current)
+
+    assert plan.statements == [
+        f"ALTER TABLE {SNAPSHOT} ALTER COLUMN title COMMENT 'English dataset title'",
+        "COMMENT ON TABLE `mapledata`.`metadata`.`ingestion_findings` "
+        f"IS '{cs.FINDINGS_COMMENT}'",
+    ]
+    assert plan.up_to_date == TOTAL_COMMENTS - 2
+
+
+@pytest.mark.parametrize("stale", [None, "", "English dataset title "])
+def test_a_missing_empty_or_slightly_different_comment_counts_as_a_difference(stale):
+    # The comparison is an exact string comparison.
+    current = desired_current()
+    current["ckan_dataset_snapshot"]["columns"]["title"] = stale
+    plan = cs.build_comment_statements("mapledata", current)
+    assert plan.statements == [
+        f"ALTER TABLE {SNAPSHOT} ALTER COLUMN title COMMENT 'English dataset title'"
+    ]
+
+
+def test_applying_the_plan_makes_the_next_plan_empty():
+    current = commentless_current()
+    first = cs.build_comment_statements("mapledata", current)
+    assert first.statements
+    # Simulate the statements having run: every comment now matches.
+    second = cs.build_comment_statements("mapledata", desired_current())
+    assert second.statements == [] and second.up_to_date == TOTAL_COMMENTS
+
+
+def test_a_column_the_table_lacks_is_reported_not_commented():
+    current = desired_current()
+    del current["ckan_resource_snapshot"]["columns"]["archived"]
+    plan = cs.build_comment_statements("mapledata", current)
+    assert plan.statements == []
+    assert plan.missing_columns == [("ckan_resource_snapshot", "archived")]
+    assert plan.up_to_date == TOTAL_COMMENTS - 1
+
+
+def test_comment_plan_does_not_change_its_input_and_checks_the_catalog_name():
+    current = commentless_current()
+    snapshot = {k: {"comment": v["comment"], "columns": dict(v["columns"])} for k, v in current.items()}
+    cs.build_comment_statements("mapledata", current)
+    assert current == snapshot
+    with pytest.raises(ValueError):
+        cs.build_comment_statements("Bad-Catalog", current)
+
+
+def test_parse_current_comments_builds_the_input_of_the_plan():
+    current = cs.parse_current_comments(
+        [("ckan_dataset_snapshot", "A table"), ("ingestion_findings", None)],
+        [
+            ("ckan_dataset_snapshot", "title", "A title"),
+            ("ckan_dataset_snapshot", "name", None),
+            ("some_other_table", "x", "ignored: its table is not listed"),
+        ],
+    )
+    assert current == {
+        "ckan_dataset_snapshot": {"comment": "A table", "columns": {"title": "A title", "name": None}},
+        "ingestion_findings": {"comment": None, "columns": {}},
+    }
+    assert cs.parse_current_comments([], []) == {}
+
+
+def test_current_comment_queries_read_the_metadata_schema_of_the_catalog():
+    tables_sql, columns_sql = cs.current_comments_queries("mapledata")
+    assert "`mapledata`.information_schema.tables" in tables_sql
+    assert "`mapledata`.information_schema.columns" in columns_sql
+    for sql in (tables_sql, columns_sql):
+        assert "table_schema = 'metadata'" in sql
+        for name, _cols, _note in cs.METADATA_TABLES:
+            assert f"'{name}'" in sql
+        assert "comment" in sql
+    assert "column_name" in columns_sql
+    with pytest.raises(ValueError):
+        cs.current_comments_queries("x; DROP CATALOG y")
 
 
 def test_build_ddl_is_deterministic_so_reruns_repeat_the_same_statements():

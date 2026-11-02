@@ -279,15 +279,32 @@ names; fix them when the first tables are built.
   ([CREATE TABLE](https://docs.databricks.com/aws/en/sql/language-manual/sql-ref-syntax-ddl-create-table-using)).
   `catalog_setup.py` uses it when it creates the tables in the `metadata`
   schema. Because `CREATE TABLE IF NOT EXISTS` leaves an existing table alone,
-  it also applies `COMMENT ON TABLE ... IS '...'` and
-  `ALTER TABLE ... ALTER COLUMN <col> COMMENT '...'` for every table and column
-  on each run, so comments can be added or changed without dropping a table
+  comments that were added or changed later are applied with
+  `COMMENT ON TABLE ... IS '...'` and
+  `ALTER TABLE ... ALTER COLUMN <col> COMMENT '...'`, without dropping a table
   ([COMMENT ON](https://docs.databricks.com/aws/en/sql/language-manual/sql-ref-syntax-ddl-comment),
   [ALTER TABLE column](https://docs.databricks.com/aws/en/sql/language-manual/sql-ref-syntax-ddl-alter-table-manage-column)).
-  Both need the `MODIFY` privilege on the table. The pages do not say what a
-  repeated identical comment does; we rely on it simply setting the same value
-  again. Keep apostrophes out of comment text; the comments live in
-  `catalog_setup.py` and a test checks every table and column has one.
+  Both need the `MODIFY` privilege on the table. Keep apostrophes out of
+  comment text; the comments live in `catalog_setup.py` and a test checks every
+  table and column has one.
+- **Comments are applied only where they differ.** The Databricks pages do not
+  say what re-applying an unchanged comment does. Measured on 2026-11-02:
+  **it still creates a new Delta version**. A second `bootstrap_catalog` run
+  took `ckan_dataset_snapshot` from version 20 to version 37 (one
+  `SET TBLPROPERTIES` and 16 `CHANGE COLUMN` operations), although nothing had
+  changed. So `bootstrap_catalog` first reads the current comments from the
+  catalog's `information_schema.tables` and `information_schema.columns`
+  (`COMMENT` is a nullable `STRING` in both; they list only objects the user
+  can access,
+  [tables](https://docs.databricks.com/aws/en/sql/language-manual/information-schema/tables),
+  [columns](https://docs.databricks.com/aws/en/sql/language-manual/information-schema/columns)),
+  and `build_comment_statements` returns only the differences (exact string
+  comparison; no comment counts as a difference). The builder is pure: the
+  current comments are its input, so it is unit-tested without Spark. A table
+  that does not exist yet gets its comments inline in `CREATE TABLE`, and a
+  column an existing table lacks is reported as a warning, not commented. With
+  `dry_run` the notebook prints only the statements that would run, then
+  "N comments up to date".
 - **Changing a metadata table.** The metadata tables accumulate history that
   later runs compare against (for example `ckan_resource_snapshot` feeds the
   added, removed and archived checks). **Add columns with idempotent

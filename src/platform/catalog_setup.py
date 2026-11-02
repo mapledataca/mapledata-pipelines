@@ -22,14 +22,22 @@ Structure created
 The domains are read from config/datasets.yml, so adding a dataset with a new
 domain and re-running the bootstrap creates that domain's schemas.
 
-This module only BUILDS the SQL statements (plain strings), which keeps it
-unit-testable without Spark. bootstrap_catalog.py executes them.
+Comments on the metadata tables are kept in code, but they are applied only
+where they differ from the comments the tables have now: re-applying an
+unchanged comment still creates a new Delta version (measured, see
+docs/architecture.md). build_comment_statements takes the current comments as
+input and returns just the differences.
+
+This module only BUILDS the SQL statements (plain strings) and compares
+comments given to it, which keeps it unit-testable without Spark.
+bootstrap_catalog.py reads the current comments and executes the statements.
 """
 
 from __future__ import annotations
 
 import re
-from typing import Iterable
+from dataclasses import dataclass, field
+from typing import Iterable, Optional
 
 #: Layers created for every domain (medallion architecture).
 LAYERS = ("bronze", "silver", "gold")
@@ -123,13 +131,88 @@ METADATA_TABLES = (
 )
 
 
-def _comment_statements(catalog: str, name: str, columns: tuple, comment: str) -> list:
-    """COMMENT ON TABLE plus one ALTER COLUMN ... COMMENT per column."""
-    table = f"`{catalog}`.`metadata`.`{name}`"
-    return [f"COMMENT ON TABLE {table} IS '{comment}'"] + [
-        f"ALTER TABLE {table} ALTER COLUMN {col} COMMENT '{note}'"
-        for col, _kind, note in columns
-    ]
+@dataclass(frozen=True)
+class CommentPlan:
+    """What to do about comments, given the comments the tables have now.
+
+    statements:      COMMENT ON TABLE / ALTER COLUMN ... COMMENT, only for
+                     comments that differ.
+    up_to_date:      how many table and column comments already match.
+    missing_columns: (table, column) pairs of existing tables that lack a column
+                     this module defines. No statement is emitted for them (it
+                     would fail); add the column first, see docs/architecture.md.
+    """
+
+    statements: list = field(default_factory=list)
+    up_to_date: int = 0
+    missing_columns: list = field(default_factory=list)
+
+
+def current_comments_queries(catalog: str) -> tuple:
+    """SQL that reads the current comments of the metadata tables.
+
+    Returns (tables_query, columns_query), to be run before the DDL. They read
+    the catalog's information_schema, which lists only objects the user may
+    access and fails while the catalog does not exist yet. Feed the rows to
+    parse_current_comments.
+    """
+    c = _check(catalog, "catalog")
+    names = ", ".join(f"'{name}'" for name, _cols, _note in METADATA_TABLES)
+    where = f"WHERE table_schema = 'metadata' AND table_name IN ({names})"
+    return (
+        f"SELECT table_name, comment FROM `{c}`.information_schema.tables {where}",
+        f"SELECT table_name, column_name, comment "
+        f"FROM `{c}`.information_schema.columns {where}",
+    )
+
+
+def parse_current_comments(table_rows: Iterable, column_rows: Iterable) -> dict:
+    """Turn information_schema rows into {table: {"comment", "columns"}}.
+
+    table_rows are (table_name, comment) and column_rows are
+    (table_name, column_name, comment); a comment is None when there is none.
+    Only tables that appear in table_rows are listed, so a table that does not
+    exist yet is simply absent.
+    """
+    current = {name: {"comment": comment, "columns": {}} for name, comment in table_rows}
+    for table, column, comment in column_rows:
+        if table in current:
+            current[table]["columns"][column] = comment
+    return current
+
+
+def build_comment_statements(catalog: str, current: Optional[dict] = None) -> CommentPlan:
+    """Comment statements for the metadata tables that need them.
+
+    current is what parse_current_comments returns. A comment is applied only
+    when it is not equal (exact string comparison) to the current one: setting
+    an unchanged comment still creates a Delta version.
+
+    A table missing from current does not exist yet. It is created with its
+    comments inline (CREATE TABLE ... COMMENT), so it gets no statement here.
+    """
+    c = _check(catalog, "catalog")
+    current = current or {}
+    statements, missing, up_to_date = [], [], 0
+    for name, columns, comment in METADATA_TABLES:
+        state = current.get(name)
+        if state is None:
+            continue
+        table = f"`{c}`.`metadata`.`{name}`"
+        if state["comment"] == comment:
+            up_to_date += 1
+        else:
+            statements.append(f"COMMENT ON TABLE {table} IS '{comment}'")
+        for col, _kind, note in columns:
+            if col not in state["columns"]:
+                missing.append((name, col))
+            elif state["columns"][col] == note:
+                up_to_date += 1
+            else:
+                statements.append(
+                    f"ALTER TABLE {table} ALTER COLUMN {col} COMMENT '{note}'"
+                )
+    return CommentPlan(statements, up_to_date, missing)
 
 
 def _create_table(catalog: str, name: str, columns: tuple, comment: str) -> str:
@@ -189,11 +272,9 @@ def build_ddl(catalog: str, domains: Iterable[str]) -> list:
         f"PARTITION BY resource_id ORDER BY checked_at DESC, run_id DESC) = 1",
         _create_table(c, "ingestion_findings", FINDING_COLUMNS, FINDINGS_COMMENT),
     ]
-    # CREATE TABLE IF NOT EXISTS leaves an existing table as it is, so the
-    # comments are applied again to every table. Setting a comment is idempotent,
-    # which lets comments change or arrive later without dropping a table.
-    for table, columns, comment in METADATA_TABLES:
-        statements += _comment_statements(c, table, columns, comment)
+    # CREATE TABLE IF NOT EXISTS leaves an existing table as it is, so comments
+    # that changed (or arrived later) are applied by build_comment_statements,
+    # which compares them with the comments the tables have now.
     for schema in domain_schemas(domains):
         domain, layer = schema.rsplit("_", 1)
         statements.append(
