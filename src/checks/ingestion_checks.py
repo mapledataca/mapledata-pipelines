@@ -31,6 +31,7 @@ INFO (good to know).
 from __future__ import annotations
 
 import json
+import os
 import re
 from collections import Counter
 from dataclasses import dataclass, replace
@@ -61,8 +62,10 @@ ROUNDED_VALUES = "rounded_values"
 #: ignored by format_gap.
 TABULAR_FORMATS = ("CSV", "XLS", "XLSX")
 
-#: How many bytes of a landed CSV are searched for "rounded".
+#: How many bytes at the start and at the end of a landed CSV are searched for
+#: "rounded".
 HEAD_BYTES = 4096
+TAIL_BYTES = 4096
 
 #: Shown in every report; format_gap cannot prove full coverage.
 FORMAT_GAP_NOTE = (
@@ -87,6 +90,7 @@ SNAPSHOT_COLUMNS = (
     ("archived", "BOOLEAN"),
     ("dataset_archived", "BOOLEAN"),
     ("landed_path", "STRING"),
+    ("rounded_marker", "BOOLEAN"),
 )
 
 #: Columns of metadata.ingestion_findings (same note as above).
@@ -264,7 +268,12 @@ def _landed_paths(run_log: dict, resource_ids: Iterable) -> dict:
 
 
 def build_resource_snapshot(
-    run_id: str, checked_at: datetime, spec: ci.DatasetSpec, metadata: dict, run_log: dict
+    run_id: str,
+    checked_at: datetime,
+    spec: ci.DatasetSpec,
+    metadata: dict,
+    run_log: dict,
+    rounded: Optional[dict] = None,
 ) -> list:
     """One row (dict keyed by SNAPSHOT_COLUMNS) per resource CKAN lists.
 
@@ -278,6 +287,13 @@ def build_resource_snapshot(
     left out: see check_description_mentions_archived. The next run reads both
     flags back from the previous snapshot, so check_archived can report what
     changed instead of what is.
+
+    rounded_marker is True when a rounded marker was found for the resource
+    (name, description, file head or file tail). False means no marker was found,
+    NOT that the values are exact: do not treat it as safe to sum. rounded maps
+    resource_id to the places a marker was found, as scan_rounded returns in
+    RoundedScan.matches; without it only the name and description are searched,
+    and no file is read.
     """
     resources = metadata.get("resources") or []
     selected_ids = {r.get("id") for r in ci.select_resources(metadata, spec)}
@@ -303,6 +319,11 @@ def build_resource_snapshot(
                 "archived": bool(_matched_fields(res, _RESOURCE_TEXT, _ARCHIVED)),
                 "dataset_archived": dataset_archived,
                 "landed_path": landed.get(rid),
+                "rounded_marker": bool(
+                    rounded.get(rid)
+                    if rounded is not None
+                    else _matched_fields(res, _RESOURCE_TEXT, _ROUNDED)
+                ),
             }
         )
     return rows
@@ -609,41 +630,80 @@ def check_description_mentions_archived(ctx: Context) -> list:
     ]
 
 
-def check_rounded_values(
-    ctx: Context,
-    snapshot: list,
-    read_head: Optional[Callable[[str], bytes]] = None,
-    landing_dir: Optional[Path] = None,
-) -> list:
-    """INFO: "rounded" (any case) in a resource name, description or file head.
+@dataclass(frozen=True)
+class RoundedScan:
+    """Where "rounded" was found, for the resources of one dataset.
 
-    IRCC marks tables "[rounded - not for calculations]"; silver and gold must
-    then use the published totals, not sums of cells. Matches are looked for in
-    the resource name, the resource description and, for landed CSV files, the
-    first bytes of the file (read_head). details_json records where each
-    resource matched: "name", "description" or "file_head".
-
-    One finding per dataset. A file that cannot be read is skipped and counted.
-    Without read_head or landing_dir only the name and description are checked.
+    matches maps resource_id to the places it was found in ("name",
+    "description", "file_head", "file_tail"); a resource without a marker is not
+    in it. files_read counts landed CSV files read completely, files_unreadable
+    those where a read failed.
     """
-    landed = {r["resource_id"]: r["landed_path"] for r in snapshot if r["landed_path"]}
-    matches, unreadable, files_read = {}, 0, 0
-    selected = ctx.selected
-    for res in selected:
-        where = _matched_fields(res, ("name", "description"), _ROUNDED)
-        path = landed.get(res["id"])
+
+    matches: dict
+    files_read: int = 0
+    files_unreadable: int = 0
+
+
+def scan_rounded(
+    ctx: Context,
+    landed: dict,
+    read_head: Optional[Callable[[str], bytes]] = None,
+    read_tail: Optional[Callable[[str], bytes]] = None,
+    landing_dir: Optional[Path] = None,
+) -> RoundedScan:
+    """Look for "rounded" (any case) in every resource of the dataset.
+
+    Every resource is searched by name and description. A landed CSV file
+    (landed maps resource_id to its path under landing_dir) is also searched in
+    its first bytes (read_head) and its last bytes (read_tail), because a
+    footnote can sit at the end. A file that cannot be read is skipped and
+    counted. Without a reader or landing_dir only names and descriptions are
+    searched.
+
+    Finding no marker does not mean the values are exact: only that no marker
+    was found where we looked.
+    """
+    matches, files_read, unreadable = {}, 0, 0
+    for res in ctx.resources:
+        rid = res.get("id")
+        where = _matched_fields(res, _RESOURCE_TEXT, _ROUNDED)
+        path = landed.get(rid)
         is_csv = str(res.get("format", "")).upper() == "CSV"
-        if read_head and landing_dir is not None and path and is_csv:
-            try:
-                head = read_head(str(Path(landing_dir) / path))
-            except (OSError, ValueError):
+        readers = (("file_head", read_head), ("file_tail", read_tail))
+        if landing_dir is not None and path and is_csv and any(r for _, r in readers):
+            failed = False
+            for place, reader in readers:
+                if reader is None:
+                    continue
+                try:
+                    data = reader(str(Path(landing_dir) / path))
+                except (OSError, ValueError):
+                    failed = True
+                    continue
+                if _ROUNDED.search(data.decode("utf-8", errors="replace")):
+                    where.append(place)
+            if failed:
                 unreadable += 1
             else:
                 files_read += 1
-                if _ROUNDED.search(head.decode("utf-8", errors="replace")):
-                    where.append("file_head")
         if where:
-            matches[res["id"]] = where
+            matches[rid] = where
+    return RoundedScan(matches, files_read, unreadable)
+
+
+def check_rounded_values(ctx: Context, scan: RoundedScan) -> list:
+    """INFO: "rounded" (any case) in a selected resource name, description or file.
+
+    IRCC marks tables "[rounded - not for calculations]"; silver and gold must
+    then use the published totals, not sums of cells. scan (see scan_rounded)
+    holds where each resource matched, recorded in details_json as "name",
+    "description", "file_head" or "file_tail".
+
+    One finding per dataset, for the selected resources.
+    """
+    selected = ctx.selected
+    matches = {r["id"]: scan.matches[r["id"]] for r in selected if r["id"] in scan.matches}
     if not matches:
         return []
     return [
@@ -656,8 +716,8 @@ def check_rounded_values(
             selected_resource_count=len(selected),
             resource_ids=sorted(matches),
             matched_in={rid: matches[rid] for rid in sorted(matches)},
-            files_read=files_read,
-            files_unreadable=unreadable,
+            files_read=scan.files_read,
+            files_unreadable=scan.files_unreadable,
         )
     ]
 
@@ -667,7 +727,7 @@ def check_rounded_values(
 # ---------------------------------------------------------------------------
 
 
-def run_checks(
+def run_all(
     run_id: str,
     checked_at: datetime,
     specs: Iterable,
@@ -676,17 +736,22 @@ def run_checks(
     previous_rows_by_key: Optional[dict] = None,
     read_head: Optional[Callable[[str], bytes]] = None,
     landing_root: Optional[str] = None,
-) -> list:
-    """Run every check for every spec that has a run log; return the findings.
+    read_tail: Optional[Callable[[str], bytes]] = None,
+) -> tuple:
+    """Run every check for every spec that has a run log.
+
+    Returns (findings, snapshot_rows). The snapshot rows are the ones to write
+    to metadata.ckan_resource_snapshot; they are built here, from the same scan
+    of the landed files that feeds rounded_values, so each file is read once.
 
     A spec without a run log took no part in the run and is skipped. A spec
     whose metadata is missing (never fetched, no cache) gets only the checks
-    that need the run log. previous_rows_by_key maps a dataset key to the rows
-    of its previous snapshot; a key without rows is treated as a first run.
-    The result is sorted, so the output is stable.
+    that need the run log, and no snapshot rows. previous_rows_by_key maps a
+    dataset key to the rows of its previous snapshot; a key without rows is
+    treated as a first run. The findings are sorted, so the output is stable.
     """
     previous_rows_by_key = previous_rows_by_key or {}
-    findings = []
+    findings, snapshot_rows = [], []
     for spec in specs:
         run_log = run_logs_by_key.get(spec.key)
         if run_log is None:
@@ -698,31 +763,41 @@ def run_checks(
         if metadata is None:
             continue
 
-        snapshot = build_resource_snapshot(run_id, checked_at, spec, metadata, run_log)
-        previous = previous_rows_by_key.get(spec.key) or []
         landing_dir = (
             ci.dataset_landing_dir(ci.RunSettings(landing_root, ""), spec)
             if landing_root
             else None
         )
+        landed = _landed_paths(run_log, [r.get("id") for r in ctx.resources])
+        scan = scan_rounded(ctx, landed, read_head, read_tail, landing_dir)
+        snapshot = build_resource_snapshot(
+            run_id, checked_at, spec, metadata, run_log, rounded=scan.matches
+        )
+        snapshot_rows += snapshot
+        previous = previous_rows_by_key.get(spec.key) or []
         findings += check_resource_removed(ctx, snapshot, previous)
         findings += check_resource_added(ctx, snapshot, previous)
         findings += check_format_gap(ctx)
         findings += check_missing_last_modified(ctx)
         findings += check_archived(ctx, previous)
         findings += check_description_mentions_archived(ctx)
-        findings += check_rounded_values(ctx, snapshot, read_head, landing_dir)
+        findings += check_rounded_values(ctx, scan)
 
     order = {s: i for i, s in enumerate(SEVERITIES)}
-    return sorted(
-        findings,
+    findings.sort(
         key=lambda f: (
             order[f.severity],
             f.dataset_key,
             f.check_name,
             f.resource_id or "",
-        ),
+        )
     )
+    return findings, snapshot_rows
+
+
+def run_checks(*args, **kwargs) -> list:
+    """The findings of run_all (same arguments)."""
+    return run_all(*args, **kwargs)[0]
 
 
 # ---------------------------------------------------------------------------
@@ -884,3 +959,25 @@ def file_head_reader(size: int = HEAD_BYTES) -> Callable[[str], bytes]:
             return fh.read(size)
 
     return read_head
+
+
+def file_tail_reader(
+    size: int = TAIL_BYTES, skip_head: int = HEAD_BYTES
+) -> Callable[[str], bytes]:
+    """A function that returns the last `size` bytes of a file.
+
+    The first `skip_head` bytes are left out, because the head reader already
+    covers them: a short file has an empty tail, and a match is never reported
+    in both the head and the tail.
+    """
+
+    def read_tail(path: str) -> bytes:
+        with open(path, "rb") as fh:
+            total = fh.seek(0, os.SEEK_END)
+            start = max(total - size, skip_head)
+            if start >= total:
+                return b""
+            fh.seek(start)
+            return fh.read()
+
+    return read_tail

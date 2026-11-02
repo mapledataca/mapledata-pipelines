@@ -102,7 +102,7 @@ SNAPSHOT = "`mapledata`.`metadata`.`ckan_dataset_snapshot`"
 def test_unchanged_comments_produce_no_statements():
     plan = cs.build_comment_statements("mapledata", desired_current())
     assert plan.statements == []
-    assert plan.up_to_date == TOTAL_COMMENTS == 3 + 16 + 15 + 8
+    assert plan.up_to_date == TOTAL_COMMENTS == 3 + 16 + 16 + 8
     assert plan.missing_columns == []
 
 

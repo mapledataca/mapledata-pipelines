@@ -82,7 +82,9 @@ for s in checked:
 
 # COMMAND ----------
 
-findings = ic.run_checks(
+# One pass: the findings and the snapshot rows share a single scan of the landed
+# files (the start and the end of each CSV), so each file is read once.
+findings, snapshot_rows = ic.run_all(
     run_id,
     checked_at,
     checked,
@@ -90,16 +92,9 @@ findings = ic.run_checks(
     run_logs,
     previous_rows_by_key=previous,
     read_head=ic.file_head_reader(),
+    read_tail=ic.file_tail_reader(),
     landing_root=landing_root,
 )
-snapshot_rows = [
-    row
-    for s in checked
-    if metadata[s.key]
-    for row in ic.build_resource_snapshot(
-        run_id, checked_at, s, metadata[s.key], run_logs[s.key]
-    )
-]
 
 # COMMAND ----------
 

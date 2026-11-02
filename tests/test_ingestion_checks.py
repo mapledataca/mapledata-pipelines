@@ -630,12 +630,22 @@ def test_run_checks_reports_archived_as_info_on_the_second_run():
 # ---------------------------------------------------------------------------
 
 
-def rounded(spec, metadata, files=None, run_log=None):
+def scan(spec, metadata, files=None, tails=None, run_log=None):
+    """Scan the landed files with fake readers; return (scan, head reader, tail reader)."""
     run_log = run_log or log(downloaded=[f"{r['id']}_data.csv" for r in metadata["resources"]])
     snap = snapshot(spec, metadata, run_log)
-    reader = FakeHead(files or {})
-    found = ic.check_rounded_values(ctx(spec, metadata, run_log), snap, reader, LANDING)
-    return found, reader
+    landed_paths = {r["resource_id"]: r["landed_path"] for r in snap if r["landed_path"]}
+    head = FakeHead(files or {})
+    tail = FakeHead(tails) if tails is not None else None
+    result = ic.scan_rounded(ctx(spec, metadata, run_log), landed_paths, head, tail, LANDING)
+    return result, head, tail
+
+
+def rounded(spec, metadata, files=None, tails=None, run_log=None):
+    """Run check_rounded_values; return (findings, head reader, tail reader)."""
+    result, head, tail = scan(spec, metadata, files, tails, run_log)
+    run_log = run_log or log(downloaded=[f"{r['id']}_data.csv" for r in metadata["resources"]])
+    return ic.check_rounded_values(ctx(spec, metadata, run_log), result), head, tail
 
 
 def test_rounded_values_records_where_each_resource_matched():
@@ -679,7 +689,9 @@ def test_rounded_values_reads_only_landed_csv_files_at_the_landing_path():
     metadata = meta(res("a", fmt="CSV"), res("b", fmt="XLSX"), res("c", fmt="CSV"))
     # c failed to land; b is not a CSV.
     run_log = log(downloaded=["a_data.csv", "b_data.xlsx"], failed=[("c", "HTTP 504")])
-    found, reader = rounded(spec, metadata, {landed("a_data.csv"): b"plain"}, run_log)
+    found, reader, _ = rounded(
+        spec, metadata, {landed("a_data.csv"): b"plain"}, run_log=run_log
+    )
     assert found == [] and reader.calls == [landed("a_data.csv")]
 
 
@@ -696,10 +708,10 @@ def test_rounded_values_skips_unreadable_files_and_counts_them():
 def test_rounded_values_checks_name_and_description_without_a_reader():
     spec = make_spec()
     metadata = meta(res("a", "[rounded] A"), res("b", "B"))
-    snap = snapshot(spec, metadata, log(downloaded=["a_data.csv", "b_data.csv"]))
-    (finding,) = ic.check_rounded_values(ctx(spec, metadata), snap)
+    result = ic.scan_rounded(ctx(spec, metadata), {"a": "a_data.csv", "b": "b_data.csv"})
+    (finding,) = ic.check_rounded_values(ctx(spec, metadata), result)
     assert details(finding)["matched_in"] == {"a": ["name"]}
-    assert details(finding)["files_read"] == 0
+    assert details(finding)["files_read"] == 0 and details(finding)["files_unreadable"] == 0
 
 
 def test_rounded_values_is_silent_when_nothing_is_rounded():
@@ -708,11 +720,171 @@ def test_rounded_values_is_silent_when_nothing_is_rounded():
     assert rounded(spec, metadata, {landed("a_data.csv"): b"a,b\n1,2\n"})[0] == []
 
 
-def test_rounded_values_only_searches_the_file_head():
+def test_rounded_values_only_searches_what_the_readers_return():
     spec = make_spec()
     metadata = meta(res("a"))
-    # The injected reader decides how much to return; a short head hides the word.
+    # The injected readers decide how much to return; a short head hides the word.
     assert rounded(spec, metadata, {landed("a_data.csv"): b"a,b\n"})[0] == []
+
+
+def test_rounded_values_also_reads_the_file_tail_and_records_file_tail():
+    spec = make_spec()
+    metadata = meta(res("a"), res("b"), res("c"))
+    heads = {landed(f"{r}_data.csv"): b"a,b\n1,2\n" for r in "abc"}
+    tails = {
+        landed("a_data.csv"): b"Note: figures are rounded to the nearest 5.",
+        landed("b_data.csv"): b"1,2\n",
+        landed("c_data.csv"): b"[ROUNDED]",
+    }
+    (finding,) = rounded(spec, metadata, heads, tails)[0]
+    body = details(finding)
+    assert body["matched_in"] == {"a": ["file_tail"], "c": ["file_tail"]}
+    assert body["resource_ids"] == ["a", "c"] and body["files_read"] == 3
+
+
+def test_rounded_values_lists_name_description_head_and_tail_in_that_order():
+    spec = make_spec()
+    metadata = meta(res("a", "Table (rounded)", description="rounded too"))
+    files = {landed("a_data.csv"): b"rounded"}
+    tails = {landed("a_data.csv"): b"rounded"}
+    (finding,) = rounded(spec, metadata, files, tails)[0]
+    assert details(finding)["matched_in"] == {
+        "a": ["name", "description", "file_head", "file_tail"]
+    }
+
+
+def test_rounded_values_skips_the_tail_when_there_is_no_tail_reader():
+    spec = make_spec()
+    metadata = meta(res("a"))
+    result, head, tail = scan(spec, metadata, {landed("a_data.csv"): b"plain"})
+    assert tail is None and head.calls == [landed("a_data.csv")]
+    assert result.matches == {} and result.files_read == 1
+
+
+def test_rounded_values_counts_a_file_once_when_a_tail_read_fails():
+    spec = make_spec()
+    metadata = meta(res("a", "[rounded] A"), res("b"))
+    heads = {landed("a_data.csv"): b"x", landed("b_data.csv"): b"x"}
+    tails = {landed("a_data.csv"): b"x", landed("b_data.csv"): OSError("gone")}
+    result, _head, tail = scan(spec, metadata, heads, tails)
+    assert (result.files_read, result.files_unreadable) == (1, 1)
+    assert result.matches == {"a": ["name"]}
+    assert tail.calls == [landed("a_data.csv"), landed("b_data.csv")]
+
+
+def test_rounded_values_keeps_a_head_match_when_only_the_tail_read_fails():
+    spec = make_spec()
+    metadata = meta(res("a"))
+    result, _h, _t = scan(
+        spec, metadata, {landed("a_data.csv"): b"rounded"}, {landed("a_data.csv"): OSError("x")}
+    )
+    assert result.matches == {"a": ["file_head"]} and result.files_unreadable == 1
+
+
+def test_scan_rounded_searches_every_resource_by_name_but_reads_only_landed_csv():
+    spec = make_spec(formats=("CSV",))
+    metadata = meta(res("a"), res("x", "[rounded] XLSX table", fmt="XLSX"))
+    result, head, _t = scan(spec, metadata, {landed("a_data.csv"): b"plain"})
+    assert result.matches == {"x": ["name"]}      # not selected, but named rounded
+    assert head.calls == [landed("a_data.csv")]   # only the landed CSV is read
+    # The finding speaks only of the selected resources.
+    assert ic.check_rounded_values(ctx(spec, metadata), result) == []
+
+
+def test_file_tail_reader_returns_the_end_of_a_file_without_overlapping_the_head(tmp_path):
+    path = tmp_path / "t.csv"
+    path.write_bytes(b"H" * 10 + b"M" * 30 + b"T" * 5)       # 45 bytes
+    assert ic.file_tail_reader(size=5, skip_head=10)(str(path)) == b"T" * 5
+    # The tail never reaches back into the head region.
+    assert ic.file_tail_reader(size=100, skip_head=10)(str(path)) == b"M" * 30 + b"T" * 5
+    # A file no longer than the head has no tail.
+    assert ic.file_tail_reader(size=5, skip_head=45)(str(path)) == b""
+    assert ic.file_tail_reader(size=5, skip_head=100)(str(path)) == b""
+    empty = tmp_path / "empty.csv"
+    empty.write_bytes(b"")
+    assert ic.file_tail_reader()(str(empty)) == b""
+    with pytest.raises(OSError):
+        ic.file_tail_reader()(str(tmp_path / "missing.csv"))
+
+
+def test_file_readers_split_a_real_file_into_head_and_tail(tmp_path):
+    path = tmp_path / "big.csv"
+    path.write_bytes(b"a" * ic.HEAD_BYTES + b"b" * 50 + b"rounded")
+    assert b"rounded" not in ic.file_head_reader()(str(path))
+    assert b"rounded" in ic.file_tail_reader()(str(path))
+
+
+# --- rounded_marker in the snapshot -------------------------------------------
+
+
+def test_snapshot_rounded_marker_comes_from_name_and_description_without_a_scan():
+    spec = make_spec()
+    rows = snapshot(
+        spec,
+        meta(res("a", "[rounded] A"), res("b", "B", description="Rounded figures"), res("c", "C")),
+    )
+    assert [(r["resource_id"], r["rounded_marker"]) for r in rows] == [
+        ("a", True), ("b", True), ("c", False),
+    ]
+
+
+def test_snapshot_rounded_marker_uses_the_scan_when_given_one():
+    spec = make_spec()
+    metadata = meta(res("a"), res("b"))
+    rows = ic.build_resource_snapshot(
+        RUN, NOW, spec, metadata, log(), rounded={"b": ["file_tail"]}
+    )
+    assert [(r["resource_id"], r["rounded_marker"]) for r in rows] == [("a", False), ("b", True)]
+
+
+def test_rounded_marker_false_does_not_mean_the_values_are_exact():
+    snapshot_doc = " ".join(ic.build_resource_snapshot.__doc__.split())
+    scan_doc = " ".join(ic.scan_rounded.__doc__.split())
+    assert "NOT that the values are exact" in snapshot_doc
+    assert "no marker was found" in scan_doc
+
+
+def test_rounded_marker_is_the_last_column_so_a_migrated_table_keeps_the_order():
+    assert ic.SNAPSHOT_COLUMNS[-1] == ("rounded_marker", "BOOLEAN")
+    assert list(snapshot(make_spec(), meta(res("a")))[0])[-1] == "rounded_marker"
+
+
+def test_run_all_returns_snapshot_rows_with_the_marker_found_in_the_files(tmp_path):
+    spec = make_spec()
+    landing_dir = ci.dataset_landing_dir(ci.RunSettings(str(tmp_path), ""), spec)
+    landing_dir.mkdir(parents=True)
+    (landing_dir / "a_data.csv").write_bytes(b"a,b\n" + b"x" * ic.HEAD_BYTES + b"\nrounded to 5\n")
+    (landing_dir / "b_data.csv").write_bytes(b"a,b\n1,2\n")
+
+    findings, rows = ic.run_all(
+        RUN, NOW, [spec],
+        metadata_by_key={"ds": meta(res("a"), res("b"))},
+        run_logs_by_key={"ds": log(downloaded=["a_data.csv", "b_data.csv"])},
+        read_head=ic.file_head_reader(),
+        read_tail=ic.file_tail_reader(),
+        landing_root=str(tmp_path),
+    )
+    assert [(r["resource_id"], r["rounded_marker"]) for r in rows] == [("a", True), ("b", False)]
+    assert [(f.check_name, details(f)["matched_in"]) for f in findings] == [
+        (ic.ROUNDED_VALUES, {"a": ["file_tail"]})
+    ]
+
+
+def test_run_all_builds_rows_only_for_datasets_with_metadata_and_a_log():
+    a, b, c = make_spec("a"), make_spec("b"), make_spec("c")
+    findings, rows = ic.run_all(
+        RUN, NOW, [a, b, c],
+        metadata_by_key={"a": meta(res("r1"))},   # b has a log but no metadata
+        run_logs_by_key={"a": log(), "b": log(error="no metadata")},
+    )
+    assert {r["dataset_key"] for r in rows} == {"a"}
+    assert [(f.dataset_key, f.check_name) for f in findings] == [("b", ic.DOWNLOAD_FAILED)]
+
+
+def test_run_checks_is_the_findings_of_run_all():
+    spec = make_spec()
+    args = (RUN, NOW, [spec], {"ds": meta(res("a", "Old [archived]"))}, {"ds": log()})
+    assert ic.run_checks(*args) == ic.run_all(*args)[0]
 
 
 # ---------------------------------------------------------------------------

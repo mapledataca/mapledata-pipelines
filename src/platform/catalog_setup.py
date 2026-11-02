@@ -109,6 +109,10 @@ RESOURCE_SNAPSHOT_COLUMNS = (
     ("archived", "BOOLEAN", "True when the resource name or description says archived, in any case"),
     ("dataset_archived", "BOOLEAN", "True when the dataset name or title says archived, in any case; the same for every resource of the dataset"),
     ("landed_path", "STRING", "Path of the landed file relative to the dataset landing folder; null when nothing landed this run"),
+    # Keep new columns last: ADD COLUMNS appends, so a migrated table then has
+    # the same column order as a new one. Rows written before this column existed
+    # hold NULL (not checked) and are not backfilled.
+    ("rounded_marker", "BOOLEAN", "True when a rounded marker was found (name, description, file head or tail). False means no marker was found, not that values are exact."),
 )
 
 #: Columns of metadata.ingestion_findings as (name, type, comment).
