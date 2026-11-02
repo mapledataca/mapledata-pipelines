@@ -49,6 +49,16 @@ formats are `[CSV, XLSX, XLS]`.
   on the live `package_show` metadata. Evidence: 17 of 17 CSV resources in
   `esdc_lmia_statistics_quarterly` and 4 of 4 in
   `esdc_lmia_statistics_annual`.
+- **Tables 5, 8, 17 and 24 are archived.** Observed 2026-11-02 on the live
+  `package_show` metadata. Evidence: the dataset description of both
+  `esdc_lmia_statistics_quarterly` and `esdc_lmia_statistics_annual` says
+  "Table 5, 8, 17, and 24 will no longer be updated but will remain as archived
+  tables". The `archived` check flags it.
+- **Most annual tables have no CSV.** Observed 2026-11-02 on the live
+  `package_show` metadata. Evidence: `esdc_lmia_statistics_annual` has 4 CSV
+  and 24 XLSX English resources, and the registry selects only CSV. The
+  `format_gap` check reports at least 20 tables available only as XLSX. It is a
+  lower bound.
 
 ## Open questions
 

@@ -26,7 +26,10 @@ mapledata                          catalog
 ├── shared                         schema: dim_geography, dim_noc, dim_date
 ├── metadata                       schema: platform metadata
 │   ├── ckan_dataset_snapshot      table: append-only discovery results
-│   └── ckan_dataset_current       view: latest row per ckan_id
+│   ├── ckan_dataset_current       view: latest row per ckan_id
+│   ├── ckan_resource_snapshot     table: resources CKAN lists, per checked run
+│   ├── ckan_resource_current      view: latest row per resource_id
+│   └── ingestion_findings         table: post-ingestion check findings
 └── <domain>_bronze|silver|gold    one set of schemas per domain
 ```
 
@@ -134,6 +137,64 @@ Per-source behaviour: [open_canada.md](sources/open_canada.md),
 - One failing file or dataset never stops the others; the job fails at the
   end if anything failed, so job-level retries apply.
 
+### Post-ingestion checks
+
+`src/checks/ingestion_checks.py` (pure Python) and the notebook
+`src/checks/run_checks` look at an ingestion run afterwards and report what
+needs a human. They only read; ingestion behaviour is unchanged. Run the
+notebook right after `run_ingestion`, for example as the next task of the same
+job: the cached `package_show.json` it reads is overwritten by every
+successful ingestion run, so a later run would hide what an earlier one saw.
+
+**Inputs** (per dataset): the cached metadata and the run log under
+`<meta_root>/<source>/<key>/`, the landed files, and the dataset's previous
+snapshot.
+**Outputs:** one row per CKAN resource in `metadata.ckan_resource_snapshot`
+(with `selected` and `landed_path`), the findings in
+`metadata.ingestion_findings`, and a Markdown report at
+`<meta_root>/reports/<run_id>.md`. `metadata.ckan_resource_current` keeps the
+latest row per `resource_id`; a removed resource stays in it with the `run_id`
+of its last appearance.
+
+| Check | Severity | What it flags |
+|---|---|---|
+| `download_failed` | ERROR | a failure in the run log, per resource or for the whole dataset |
+| `metadata_stale` | WARN | the run used the cached metadata because a fresh fetch failed |
+| `resource_removed` | WARN | a resource of the previous snapshot is no longer listed |
+| `resource_added` | INFO | a resource the previous snapshot did not have (neither check runs on a first run) |
+| `format_gap` | WARN | tables found only in a format the entry does not select (a lower bound, see below) |
+| `missing_last_modified` | INFO | `overwrite_in_place` resources without a usable `last_modified`, versioned by hash ([ADR 0003](decisions/0003-snapshot-versioning.md)) |
+| `archived` | WARN | "archived" in the dataset or a selected resource's name or description |
+| `rounded_values` | INFO | "rounded" in a selected resource's name, description or landed CSV head |
+
+- **`format_gap` is a lower bound; no finding does not mean full coverage.**
+  Pairing one table across formats by name is unreliable: on the active
+  datasets, CSV and XLSX versions of a table rarely share a name or file name
+  (permanent residents: 16 CSV and 18 XLSX resources, no matching pair). So
+  nothing is paired. Among resources passing the entry's language and
+  `name_regex` filters, if an unselected tabular format has `n_f` resources and
+  the selected formats have `n_s`, at least `n_f - n_s` tables exist only in
+  that format. The report repeats this note.
+- **Aggregated findings.** `missing_last_modified` and `rounded_values` give
+  one finding per dataset; the affected resource count and `resource_id` list
+  are in `details_json`. `rounded_values` records where each resource matched:
+  `name`, `description` or `file_head`.
+- **Failing.** The notebook fails only when there is at least one ERROR, after
+  the tables and the report are written.
+- **Re-running a check.** Checking the same `run_id` again must not duplicate
+  rows. The notebook writes with Delta `replaceWhere` (predicate: this
+  `run_id` and the checked datasets), which replaces exactly those rows in one
+  atomic commit
+  ([selective overwrite](https://docs.databricks.com/aws/en/delta/selective-overwrite)).
+  A MERGE needs a unique key and findings have none (`resource_id` can be
+  null, one resource can have several findings); delete-then-append is two
+  commits and a failure in between loses rows. When there is nothing to write,
+  the notebook runs a `DELETE` with the same predicate, because the page
+  documents the empty-source case only for SQL `REPLACE WHERE`.
+- **Not verified.** The Delta write and the DDL have only been exercised by
+  unit tests, not in a workspace. Whether "rounded" appears in the head of the
+  IRCC CSV files is unknown; in the resource names it does.
+
 ## 4. Transformation (planned)
 
 - **Bronze:** Auto Loader into streaming tables, one table per dataset.
@@ -178,6 +239,7 @@ Each kind of metadata has one home, so nothing is documented twice.
 | Question | Where it lives | How it is kept |
 |---|---|---|
 | What data exists outside? | `metadata.ckan_dataset_snapshot` (append-only, safe to re-run) and the view `metadata.ckan_dataset_current` (latest state) | written by `tools/discover_datasets` |
+| What do the registered datasets publish, and did the run go well? | `metadata.ckan_resource_snapshot`, `metadata.ckan_resource_current`, `metadata.ingestion_findings` | written by `src/checks/run_checks` after each ingestion run |
 | Which of it do we use, and why? | `status` and `purpose` in `config/datasets.yml` | reviewed in Git |
 | Where does data flow? | Unity Catalog lineage | captured automatically |
 | What do the fields mean? | Unity Catalog table comments and column comments | written in the pipeline code |
@@ -198,10 +260,15 @@ names; fix them when the first tables are built.
   `ALTER ... SET TAGS` (Runtime 13.3+) or `SET TAG` (16.1+); columns are tagged one
   per statement; keys are case sensitive and cannot contain
   `. , - = / :` ([Tags](https://docs.databricks.com/aws/en/database-objects/tags)).
-- **Not confirmed in the docs.** The Tags page does not cover table and column
-  comment syntax, so confirm it in the SQL reference when the first comments are
-  written. The Free Edition limitations page does not mention lineage or tags,
-  but does not say they are supported either: check in the workspace.
+- **Comment syntax.** `CREATE TABLE ... USING` takes `COMMENT '...'` after a
+  column's type and a table-level `COMMENT '...'` clause
+  ([CREATE TABLE](https://docs.databricks.com/aws/en/sql/language-manual/sql-ref-syntax-ddl-create-table-using)).
+  `catalog_setup.py` uses it for the post-ingestion check tables; keep
+  apostrophes out of comment text. `ckan_dataset_snapshot` has no column
+  comments yet.
+- **Not confirmed in the docs.** The Free Edition limitations page does not
+  mention lineage or tags, but does not say they are supported either: check in
+  the workspace.
 
 ## 9. Open items to verify
 

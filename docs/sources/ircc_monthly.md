@@ -41,7 +41,16 @@ XLSX-only.
 
 - **CSVs carry "[rounded - not for calculations]".** Observed on or before
   2026-10-31. Evidence: the marker in the table names. Silver and gold must use the
-  published totals, not sums of rounded cells.
+  published totals, not sums of rounded cells. Observed 2026-11-02 on the live
+  `package_show` metadata (`rounded_values` check, resource names): permanent
+  residents 16 of 16 selected resources, TR→PR 4 of 4, study permits 3 of 6,
+  work permits 1 of 13.
+- **Some tables exist only as XLSX.** Observed 2026-11-02 on the live
+  `package_show` metadata. Evidence: the `format_gap` check reports at least 2
+  tables only as XLSX for `ircc_permanent_residents_monthly`, at least 3 for
+  `ircc_study_permit_holders_monthly` and at least 6 for
+  `ircc_work_permit_holders_monthly`. These are lower bounds; no finding for
+  `ircc_tr_to_pr_transition_monthly` does not prove full coverage.
 - **Some datasets have finer-grained files.** Observed on or before
   2026-10-31. Evidence: permanent residents has a census-subdivision file (`ODP-PR-CSD.csv`); study
   permits have DLI-level tables.
@@ -53,6 +62,9 @@ XLSX-only.
 
 - Province-level CSV coverage for work permits, TR→PR and permanent residents
   has not been checked yet.
+- Does "rounded" appear in the first bytes of the landed CSV files? It appears
+  in the resource names; the file-head match of `rounded_values` has not run on
+  landed IRCC files yet.
 
 ## History
 

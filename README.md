@@ -43,6 +43,8 @@ config/datasets.yml              dataset registry (add datasets here)
 src/ingest/ckan_ingest.py        generic CKAN ingester
 src/ingest/ckan_discover.py      search CKAN, build snapshot rows, draft entries
 src/ingest/run_ingestion.py      Databricks notebook: run ingestion (job task)
+src/checks/ingestion_checks.py   post-ingestion checks: snapshot rows, findings, report
+src/checks/run_checks.py         Databricks notebook: run the checks after ingestion
 src/platform/catalog_setup.py    builds the Unity Catalog DDL
 src/platform/bootstrap_catalog.py Databricks notebook: create catalog from zero
 tools/                           development notebooks (run_tests, discover_datasets)
@@ -70,6 +72,9 @@ CLAUDE.md                        instructions for AI coding agents
    ```
 4. Run `src/ingest/run_ingestion` (or schedule it as a Lakeflow Job task).
    Use the `domains` widget to limit the run, e.g. `immigration`.
+5. Run `src/checks/run_checks` right after the ingestion (as the next job task).
+   It records what each dataset publishes and any findings in the `metadata`
+   schema, and writes a report to `<meta_root>/reports/<run_id>.md`.
 
 ## Adding a dataset
 

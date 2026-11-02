@@ -25,12 +25,14 @@ All tests must pass before committing.
 - `src/ingest/ckan_ingest.py`: generic CKAN ingester (pure Python, injected session).
 - `src/ingest/ckan_discover.py`: searches CKAN and drafts registry entries (used by `tools/discover_datasets.py`).
 - `src/ingest/run_ingestion.py`: Databricks notebook (source format) used as a job task.
+- `src/checks/ingestion_checks.py`: post-ingestion checks (pure Python): resource snapshot rows, findings, Markdown report.
+- `src/checks/run_checks.py`: Databricks notebook that runs the checks after ingestion and writes the metadata tables and report.
 - `src/platform/catalog_setup.py`: builds idempotent Unity Catalog DDL.
 - `src/platform/bootstrap_catalog.py`: Databricks notebook that executes the DDL.
 - `tools/`: development Databricks notebooks (e.g. `run_tests`, `discover_datasets`); not run as job tasks.
 - `docs/sources/`: one file per data source: update pattern, quirks (with date and evidence), open questions.
 - `docs/decisions/`: architecture decision records (ADRs); see its `README.md` for the list.
-- `tests/`: pytest suites; `conftest.py` puts `src/ingest` and `src/platform` on `sys.path`.
+- `tests/`: pytest suites; `conftest.py` puts `src/ingest`, `src/platform` and `src/checks` on `sys.path`.
 
 ## Rules
 
