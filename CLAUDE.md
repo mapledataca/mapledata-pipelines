@@ -32,6 +32,9 @@ All tests must pass before committing.
 - `src/platform/bootstrap_catalog.py`: Databricks notebook that executes the DDL.
 - `tools/`: development Databricks notebooks (e.g. `run_tests`, `discover_datasets`); not run as job tasks.
 - `docs/sources/`: one file per data source: update pattern, quirks (with date and evidence), open questions.
+- `docs/questions.md`: analytical questions per domain; datasets are judged against them.
+- `docs/registry_review.md`: how to review discovered datasets (criteria, rounds, exclusion reason codes).
+- `docs/backlog.md`: temporary backlog (may move to GitHub Issues).
 - `docs/decisions/`: architecture decision records (ADRs); see its `README.md` for the list.
 - `tests/`: pytest suites; `conftest.py` puts `src/ingest`, `src/platform` and `src/checks` on `sys.path`.
 
@@ -48,7 +51,8 @@ All tests must pass before committing.
 4. **Registry first.** Prefer configuration in `config/datasets.yml` over
    new code paths. Validate new registry fields in `parse_registry`. Every
    entry needs a `status` (`candidate`, `active`, `deprecated`, `excluded`) and a
-   `purpose`; only `active` entries are ingested.
+   `purpose`; only `active` entries are ingested. When reviewing datasets,
+   follow `docs/registry_review.md`; record new questions in `docs/questions.md`.
 5. **No data, no secrets in Git.** Credentials come from Databricks secrets.
    Do not hard-code personal emails or tokens.
 6. **Unity Catalog names** are lower-case `snake_case`; volumes are

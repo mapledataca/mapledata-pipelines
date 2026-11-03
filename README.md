@@ -34,8 +34,10 @@ open.canada.ca (CKAN API) ──► ckan_ingest (registry-driven, idempotent)
 Orchestrated by Lakeflow Jobs. Full design and decisions:
 [docs/architecture.md](docs/architecture.md). Why each major choice was made:
 [docs/decisions/](docs/decisions/). What each data source is like (update
-patterns, quirks, open questions): [docs/sources/](docs/sources/). What is
-planned next: [docs/backlog.md](docs/backlog.md).
+patterns, quirks, open questions): [docs/sources/](docs/sources/). What the
+data should answer: [docs/questions.md](docs/questions.md); how new datasets
+are judged: [docs/registry_review.md](docs/registry_review.md). What is planned
+next: [docs/backlog.md](docs/backlog.md).
 
 ## Repository layout
 
@@ -53,6 +55,8 @@ tests/                           unit tests (no network, no Spark)
 docs/architecture.md             design and conventions
 docs/decisions/                  architecture decision records (ADRs)
 docs/sources/                    per-source notes: update patterns, quirks, open questions
+docs/questions.md                analytical questions that datasets are judged against
+docs/registry_review.md          how to review discovered datasets
 docs/backlog.md                  temporary backlog (may move to GitHub Issues)
 CLAUDE.md                        instructions for AI coding agents
 ```

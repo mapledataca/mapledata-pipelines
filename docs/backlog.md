@@ -28,7 +28,13 @@ Temporary; may move to GitHub Issues. Keep the IDs when it does.
 - **P9** Check province-level CSV coverage for work permits, TR->PR, PR.
 - **P10** One-time review of all organizations via `organization_list` to find other immigration publishers. The documentation gives `limit` 25 when `all_fields=true` (page with `offset`); on 2026-11-03 one call without `limit` returned all 353 organizations, so pass `limit` and `offset` explicitly and check the count.
 - **P11** `current_package_list_with_resources` for site-wide new-dataset detection (idea only, not implemented). The documentation says it returns datasets newest-modified first, with `limit` and `offset`. A probe on 2026-11-03 (`limit=3`, `offset=0`) returned `success` with 0 results; the reason is unknown and the behaviour is unverified.
-- **P12** Triage the ~50 unregistered `cic` datasets after organization mode; mark each `candidate` or `excluded`. (`cic` has 62 datasets on 2026-11-03.)
+- **P12** Triage the ~50 unregistered `cic` datasets after organization mode, following [registry_review.md](registry_review.md) and judging them against [questions.md](questions.md); mark each `candidate` or `excluded`. (`cic` has 62 datasets on 2026-11-03.)
+
+## Sources to find
+
+- **S1** Official figures source: Immigration Levels Plan and the annual report to Parliament (verify format and history), for question I3 in [questions.md](questions.md).
+- **S2** Statistics Canada sources for interprovincial mobility and immigrant retention (verify the tables), for question I5.
+- **S3** IRCC in-process and backlog data (verify whether it is published as open data, and with what history), for question I2.
 
 ## Open questions
 
