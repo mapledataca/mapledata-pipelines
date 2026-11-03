@@ -216,6 +216,29 @@ def test_parse_registry_rejects_todo_purpose_on_active_entry(purpose):
         )
 
 
+@pytest.mark.parametrize("purpose", ["TODO", "TODO: why rejected", "  TODO: padded"])
+def test_parse_registry_rejects_todo_purpose_on_excluded_entry(purpose):
+    with pytest.raises(ci.RegistryError, match="excluded entry needs .*why it was rejected"):
+        ci.parse_registry(
+            {"datasets": [make_entry(status=ci.STATUS_EXCLUDED, purpose=purpose)]}
+        )
+
+
+def test_parse_registry_accepts_excluded_entry_with_a_reason():
+    (spec,) = ci.parse_registry(
+        {
+            "datasets": [
+                make_entry(
+                    status="excluded",
+                    purpose="Reviewed 2026-11-03: duplicate of ircc_permanent_residents_monthly",
+                )
+            ]
+        }
+    )
+    assert spec.status == ci.STATUS_EXCLUDED
+    assert "duplicate" in spec.purpose
+
+
 @pytest.mark.parametrize("status", [ci.STATUS_CANDIDATE, ci.STATUS_DEPRECATED])
 def test_parse_registry_allows_todo_purpose_on_other_statuses(status):
     (spec,) = ci.parse_registry(
@@ -322,9 +345,10 @@ def test_select_specs_runs_only_active_and_filters_domain_and_key():
         make_spec("b", domain="housing"),
         make_spec("c", domain="immigration", status=ci.STATUS_CANDIDATE),
         make_spec("d", domain="immigration", status=ci.STATUS_DEPRECATED),
+        make_spec("e", domain="immigration", status=ci.STATUS_EXCLUDED),
     ]
     assert [s.key for s in ci.select_specs(specs)] == ["a", "b"]
-    assert [s.key for s in ci.select_specs(specs, keys=["c", "d"])] == []
+    assert [s.key for s in ci.select_specs(specs, keys=["c", "d", "e"])] == []
     assert [s.key for s in ci.select_specs(specs, domains=["housing"])] == ["b"]
     assert [s.key for s in ci.select_specs(specs, keys=["a"])] == ["a"]
 

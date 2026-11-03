@@ -74,7 +74,8 @@ UPDATE_PATTERNS = (NEW_FILE, OVERWRITE)
 STATUS_CANDIDATE = "candidate"
 STATUS_ACTIVE = "active"
 STATUS_DEPRECATED = "deprecated"
-STATUSES = (STATUS_CANDIDATE, STATUS_ACTIVE, STATUS_DEPRECATED)
+STATUS_EXCLUDED = "excluded"
+STATUSES = (STATUS_CANDIDATE, STATUS_ACTIVE, STATUS_DEPRECATED, STATUS_EXCLUDED)
 
 #: Prefix for temporary files. Spark file sources (including Auto Loader)
 #: ignore names starting with "_" or ".", so partial downloads stay invisible.
@@ -129,9 +130,11 @@ class DatasetSpec:
         ckan_id:        CKAN dataset id (or name) on the portal.
         update_pattern: NEW_FILE or OVERWRITE (see module docstring).
         status:         STATUS_CANDIDATE (registered, not ingested),
-                        STATUS_ACTIVE (ingested) or STATUS_DEPRECATED
-                        (kept for the record, not ingested).
-        purpose:        Why the dataset is wanted and where it will be used.
+                        STATUS_ACTIVE (ingested), STATUS_DEPRECATED (kept for
+                        the record, not ingested) or STATUS_EXCLUDED (reviewed
+                        and rejected, never ingested).
+        purpose:        Why the dataset is wanted and where it will be used;
+                        for an excluded entry, why it was rejected.
         source:        Folder-safe name of the portal, e.g. "open_canada".
         base_url:       CKAN Action API base URL (".../api/3/action").
         languages:      Keep resources tagged with any of these languages.
@@ -286,12 +289,20 @@ def parse_registry(raw: dict) -> list:
         if not isinstance(merged["purpose"], str) or not merged["purpose"].strip():
             raise RegistryError(f"{where}: purpose must be a non-empty string")
         merged["purpose"] = merged["purpose"].strip()
-        # Discovery drafts carry a "TODO" purpose; it must be replaced before
-        # an entry can be ingested. Candidates and deprecated entries may keep it.
-        if merged["status"] == STATUS_ACTIVE and merged["purpose"].startswith("TODO"):
-            raise RegistryError(
-                f"{where}: an active entry needs a real purpose, not a TODO placeholder"
-            )
+        # Discovery drafts carry a "TODO" purpose. An active entry must replace
+        # it, and an excluded entry must state the reason it was rejected.
+        # Candidates and deprecated entries may keep it.
+        if merged["purpose"].startswith("TODO"):
+            if merged["status"] == STATUS_ACTIVE:
+                raise RegistryError(
+                    f"{where}: an active entry needs a real purpose, "
+                    f"not a TODO placeholder"
+                )
+            if merged["status"] == STATUS_EXCLUDED:
+                raise RegistryError(
+                    f"{where}: an excluded entry needs its purpose to state "
+                    f"why it was rejected, not a TODO placeholder"
+                )
 
         if merged["key"] in seen:
             raise RegistryError(f"{where}: duplicate key '{merged['key']}'")

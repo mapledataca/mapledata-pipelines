@@ -79,10 +79,13 @@ Every entry has a `status` and a `purpose`:
 | `candidate` | registered, not ingested yet (under evaluation) |
 | `active` | ingested by `run_ingestion` |
 | `deprecated` | kept for the record, no longer ingested |
+| `excluded` | reviewed and rejected; never ingested |
 
-`purpose` records why the dataset is wanted and where it will be used. An
-`active` entry cannot keep a placeholder purpose (one starting with `TODO`, as
-written by discovery); candidates and deprecated entries may. Only `active`
+`purpose` records why the dataset is wanted and where it will be used; for an
+`excluded` entry it states why the dataset was rejected. An `active` or
+`excluded` entry cannot keep a placeholder purpose (one starting with `TODO`,
+as written by discovery); candidates and deprecated entries may. An `excluded`
+entry still counts as registered, so discovery stops proposing it. Only `active`
 entries are ingested. The old `enabled` flag is gone; the parser
 rejects it with a pointer to `status`.
 

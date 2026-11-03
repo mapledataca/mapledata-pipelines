@@ -47,7 +47,7 @@ All tests must pass before committing.
    silver. Province filtering belongs in gold or the website.
 4. **Registry first.** Prefer configuration in `config/datasets.yml` over
    new code paths. Validate new registry fields in `parse_registry`. Every
-   entry needs a `status` (`candidate`, `active`, `deprecated`) and a
+   entry needs a `status` (`candidate`, `active`, `deprecated`, `excluded`) and a
    `purpose`; only `active` entries are ingested.
 5. **No data, no secrets in Git.** Credentials come from Databricks secrets.
    Do not hard-code personal emails or tokens.
