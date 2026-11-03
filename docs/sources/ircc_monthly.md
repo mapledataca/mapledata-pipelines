@@ -17,7 +17,7 @@ every CSV table lands under the dataset's key (no `name_regex`).
 
 ## API/endpoints
 
-CKAN `package_show` on `https://open.canada.ca/data/api/action`. See
+CKAN `package_show` on `https://open.canada.ca/data/api/3/action`. See
 [open_canada.md](open_canada.md).
 
 ## Update pattern

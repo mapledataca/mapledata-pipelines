@@ -26,7 +26,7 @@
 dbutils.widgets.text("query", "")
 dbutils.widgets.text("domain", "immigration")
 dbutils.widgets.text("page_size", "100")
-dbutils.widgets.text("base_url", "https://open.canada.ca/data/api/action")
+dbutils.widgets.text("base_url", "https://open.canada.ca/data/api/3/action")
 dbutils.widgets.text("catalog", "mapledata")
 dbutils.widgets.text("max_drafts", "20")
 dbutils.widgets.dropdown("save_snapshot", "true", ["true", "false"])

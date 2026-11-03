@@ -227,8 +227,8 @@ def slugify_key(title: str) -> str:
 
 def registered_ids(specs: Iterable, base_url: str) -> set:
     """ckan_id values of every registry entry (any status) for this portal."""
-    wanted = base_url.rstrip("/")
-    return {s.ckan_id for s in specs if s.base_url.rstrip("/") == wanted}
+    wanted = ci.normalize_base_url(base_url)
+    return {s.ckan_id for s in specs if ci.normalize_base_url(s.base_url) == wanted}
 
 
 def is_registered(package: dict, registered: set) -> bool:

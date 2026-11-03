@@ -252,6 +252,38 @@ def test_parse_registry_rejects_duplicate_ckan_id_on_same_portal():
         ci.parse_registry({"datasets": entries})
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://p.example/api/action",
+        "https://p.example/api/action/",
+        "https://p.example/api/3/action",
+        "https://p.example/api/3/action/",
+    ],
+)
+def test_normalize_base_url_ignores_slash_and_api_version(url):
+    assert ci.normalize_base_url(url) == "https://p.example/api/action"
+
+
+def test_normalize_base_url_keeps_different_portals_apart():
+    assert ci.normalize_base_url("https://one.example/api/3/action") != ci.normalize_base_url(
+        "https://two.example/api/3/action"
+    )
+
+
+def test_default_base_url_pins_api_version_3():
+    assert ci.DEFAULT_BASE_URL.endswith("/api/3/action")
+
+
+def test_parse_registry_treats_versioned_and_unversioned_url_as_one_portal():
+    entries = [
+        make_entry(key="a", base_url="https://p.example/api/action"),
+        make_entry(key="b", base_url="https://p.example/api/3/action"),
+    ]
+    with pytest.raises(ci.RegistryError, match="duplicate ckan_id"):
+        ci.parse_registry({"datasets": entries})
+
+
 def test_parse_registry_allows_same_ckan_id_on_different_portals():
     entries = [
         make_entry(key="a", base_url="https://one.example/api/action"),

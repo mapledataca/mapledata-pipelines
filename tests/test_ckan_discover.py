@@ -246,6 +246,16 @@ def test_registered_ids_cover_every_status_and_same_portal_only():
     assert cd.registered_ids(specs, BASE + "/") == {"id-1", "id-2", "id-3"}
 
 
+@pytest.mark.parametrize(
+    "spec_url",
+    ["https://ckan.example/api/action", "https://ckan.example/api/3/action"],
+)
+def test_registered_ids_match_the_same_portal_with_or_without_api_version(spec_url):
+    specs = [make_spec("id-1", base_url=spec_url)]
+    assert cd.registered_ids(specs, "https://ckan.example/api/3/action") == {"id-1"}
+    assert cd.registered_ids(specs, "https://ckan.example/api/action") == {"id-1"}
+
+
 @pytest.mark.parametrize("status", ci.STATUSES)
 def test_snapshot_marks_registered_whatever_the_status(status):
     (row,) = cd.build_snapshot_rows(

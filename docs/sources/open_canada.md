@@ -26,7 +26,7 @@ Organization codes seen on the portal:
 
 ## API/endpoints
 
-CKAN Action API: `https://open.canada.ca/data/api/action`.
+CKAN Action API: `https://open.canada.ca/data/api/3/action`.
 
 | Action | Used by |
 |---|---|

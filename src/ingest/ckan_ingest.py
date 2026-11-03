@@ -61,8 +61,9 @@ from urllib3.util.retry import Retry
 # Constants
 # ---------------------------------------------------------------------------
 
-#: Default CKAN Action API base URL for open.canada.ca.
-DEFAULT_BASE_URL = "https://open.canada.ca/data/api/action"
+#: Default CKAN Action API base URL for open.canada.ca. The version segment
+#: ("/3/") pins API version 3; the unversioned form follows the latest version.
+DEFAULT_BASE_URL = "https://open.canada.ca/data/api/3/action"
 
 #: Allowed values for DatasetSpec.update_pattern.
 NEW_FILE = "new_file_per_period"
@@ -87,6 +88,16 @@ REQUIRED_KEYS = ("key", "domain", "ckan_id", "update_pattern", "status", "purpos
 
 #: Registry keys become folder names, so restrict them to safe characters.
 _SAFE_NAME = re.compile(r"^[a-z0-9][a-z0-9_]*$")
+
+
+def normalize_base_url(base_url: str) -> str:
+    """Form of a base URL used to decide whether two entries mean the same portal.
+
+    Drops trailing slashes and the API version segment, so ".../api/action",
+    ".../api/action/" and ".../api/3/action" compare equal. Use it only for
+    comparison; requests go to the URL as configured.
+    """
+    return re.sub(r"/\d+(?=/action$)", "", str(base_url).rstrip("/"))
 
 
 # ---------------------------------------------------------------------------
@@ -122,7 +133,7 @@ class DatasetSpec:
                         (kept for the record, not ingested).
         purpose:        Why the dataset is wanted and where it will be used.
         source:        Folder-safe name of the portal, e.g. "open_canada".
-        base_url:       CKAN Action API base URL (".../api/action").
+        base_url:       CKAN Action API base URL (".../api/3/action").
         languages:      Keep resources tagged with any of these languages.
         formats:        Optional allow-list of CKAN formats (upper-case),
                         e.g. ("CSV", "XLSX"). None keeps every format.
@@ -288,7 +299,7 @@ def parse_registry(raw: dict) -> list:
 
         # The same dataset registered twice would be ingested twice.
         portal_id = (
-            str(merged.get("base_url", DEFAULT_BASE_URL)).rstrip("/"),
+            normalize_base_url(merged.get("base_url", DEFAULT_BASE_URL)),
             merged["ckan_id"],
         )
         if portal_id in seen_ids:

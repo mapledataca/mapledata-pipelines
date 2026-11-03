@@ -18,7 +18,7 @@ Employer lists and statistics for the Temporary Foreign Worker Program. See the
 
 ## API/endpoints
 
-CKAN `package_show` on `https://open.canada.ca/data/api/action`. Files are
+CKAN `package_show` on `https://open.canada.ca/data/api/3/action`. Files are
 hosted off-portal (for example on `www.esdc.gc.ca`) and download from
 Databricks Free Edition. See [open_canada.md](open_canada.md).
 
