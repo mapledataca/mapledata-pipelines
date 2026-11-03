@@ -6,6 +6,9 @@
 # MAGIC `ckan_dataset_current` keeps the latest row per dataset). Datasets missing
 # MAGIC from `config/datasets.yml` get a draft registry entry printed below.
 # MAGIC Nothing is written to the registry: review each draft, then paste it by hand.
+# MAGIC The last cell is a recall check: registry datasets (active or candidate, same
+# MAGIC portal) that this run did not find. It is relative to this run's search scope,
+# MAGIC so a run with fewer organizations than the standard one lists more of them.
 # MAGIC
 # MAGIC Run `src/platform/bootstrap_catalog` first so the snapshot table exists.
 # MAGIC
@@ -107,3 +110,14 @@ drafts, left_out = cd.unregistered_drafts(
 for draft in drafts:
     print(draft, end="\n\n")
 print(f"{len(drafts)} drafts printed, {left_out} unregistered datasets not shown")
+
+# COMMAND ----------
+
+# Recall check: datasets we already track that this run did not find.
+missing = cd.missing_from_run(specs, packages, base_url)
+for spec in missing:
+    print(f"NOT FOUND [{spec.status}] {spec.key} ({spec.ckan_id})")
+print(
+    f"{len(missing)} registry datasets (active or candidate) not found, "
+    f"relative to this run's search scope"
+)

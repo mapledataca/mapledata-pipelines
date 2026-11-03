@@ -309,6 +309,53 @@ def test_snapshot_rows_flag_registered_packages():
     assert [r["is_registered"] for r in rows] == [True, True, False]
 
 
+# --- recall check ------------------------------------------------------------
+
+
+def named_spec(key, ckan_id, status=ci.STATUS_ACTIVE, base_url=BASE):
+    return ci.DatasetSpec(
+        key=key,
+        domain="immigration",
+        ckan_id=ckan_id,
+        update_pattern=ci.NEW_FILE,
+        status=status,
+        purpose="test purpose",
+        base_url=base_url,
+    )
+
+
+def test_missing_from_run_lists_active_and_candidate_entries_not_found():
+    specs = [
+        named_spec("found_by_id", "id-1"),
+        named_spec("found_by_name", "dataset-2", status=ci.STATUS_CANDIDATE),
+        named_spec("lost_active", "id-8"),
+        named_spec("lost_candidate", "id-9", status=ci.STATUS_CANDIDATE),
+    ]
+    packages = [make_package(1), make_package(2)]
+    missing = cd.missing_from_run(specs, packages, BASE)
+    assert [s.key for s in missing] == ["lost_active", "lost_candidate"]
+
+
+def test_missing_from_run_ignores_deprecated_excluded_and_other_portals():
+    specs = [
+        named_spec("old", "id-8", status=ci.STATUS_DEPRECATED),
+        named_spec("rejected", "id-9", status=ci.STATUS_EXCLUDED),
+        named_spec("elsewhere", "id-7", base_url="https://other.example/api/3/action"),
+    ]
+    assert cd.missing_from_run(specs, [], BASE) == []
+
+
+def test_missing_from_run_matches_the_portal_with_or_without_api_version():
+    specs = [named_spec("lost", "id-8", base_url="https://ckan.example/api/action")]
+    versioned = "https://ckan.example/api/3/action"
+    assert [s.key for s in cd.missing_from_run(specs, [], versioned)] == ["lost"]
+
+
+def test_missing_from_run_is_empty_when_everything_was_found_or_registry_is_empty():
+    assert cd.missing_from_run([named_spec("a", "id-1")], [make_package(1)], BASE) == []
+    assert cd.missing_from_run([], [make_package(1)], BASE) == []
+
+
 # --- 6. snapshot rows --------------------------------------------------------
 
 

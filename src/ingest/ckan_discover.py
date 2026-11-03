@@ -343,6 +343,33 @@ def is_registered(package: dict, registered: set) -> bool:
     return package.get("id") in registered or package.get("name") in registered
 
 
+#: Statuses whose datasets the discovery run is expected to find again.
+RECALL_STATUSES = (ci.STATUS_ACTIVE, ci.STATUS_CANDIDATE)
+
+
+def missing_from_run(specs: Iterable, packages: Iterable, base_url: str) -> list:
+    """Registry entries (active or candidate, this portal) the run did not find.
+
+    A recall check: a dataset we already track that discovery misses points at
+    a search scope that is too narrow (or a dataset that was removed). The
+    answer is relative to the searches that were run, so a run limited to one
+    organization will list the entries of the others. Deprecated and excluded
+    entries are not expected to turn up and are left out. Returns the specs in
+    registry order.
+    """
+    wanted = ci.normalize_base_url(base_url)
+    found = set()
+    for package in packages:
+        found.update((package.get("id"), package.get("name")))
+    return [
+        s
+        for s in specs
+        if s.status in RECALL_STATUSES
+        and ci.normalize_base_url(s.base_url) == wanted
+        and s.ckan_id not in found
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Snapshot rows
 # ---------------------------------------------------------------------------
