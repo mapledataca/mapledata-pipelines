@@ -19,6 +19,8 @@ Optional live smoke test (real network, skipped by default):
 import hashlib
 import json
 import os
+import re
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -387,6 +389,47 @@ def test_get_metadata_without_cache_raises(settings):
         ci.get_metadata(FakeSession({api(spec): requests.exceptions.ReadTimeout("slow")}), spec, settings)
 
 
+def package_response(body, content_type="application/json"):
+    """A 200 response with an arbitrary JSON body."""
+    return FakeResponse(200, json.dumps(body).encode(), content_type)
+
+
+def test_fetch_metadata_rejects_a_200_response_that_is_not_json():
+    # Status 200 with an HTML page (a maintenance or login page) must not be parsed.
+    spec = make_spec()
+    html = FakeResponse(200, b"<html>maintenance</html>", "text/html; charset=utf-8")
+    with pytest.raises(ci.UpstreamError, match="non-JSON content-type"):
+        ci.fetch_metadata(FakeSession({api(spec): html}), spec, (1, 1))
+
+
+@pytest.mark.parametrize(
+    "result",
+    [{}, {"resources": None}, {"resources": "oops"}, {"resources": {"id": "a"}}],
+)
+def test_fetch_metadata_rejects_a_result_without_a_resources_list(result):
+    spec = make_spec()
+    response = package_response({"success": True, "result": result})
+    with pytest.raises(ci.UpstreamError, match="no 'resources' list"):
+        ci.fetch_metadata(FakeSession({api(spec): response}), spec, (1, 1))
+
+
+def test_get_metadata_keeps_the_cache_when_a_200_response_is_unusable(settings):
+    spec = make_spec()
+    ci.get_metadata(FakeSession({api(spec): metadata([make_resource("a")])}), spec, settings)
+    cache = ci.dataset_meta_dir(settings, spec) / "package_show.json"
+    good_copy = cache.read_bytes()
+
+    bad_responses = [
+        FakeResponse(200, b"<html>maintenance</html>", "text/html"),       # not JSON
+        package_response({"success": True, "result": {"resources": None}}),  # malformed
+        package_response({"success": False, "result": {}}),                  # CKAN failure
+    ]
+    for bad in bad_responses:
+        result, source = ci.get_metadata(FakeSession({api(spec): bad}), spec, settings)
+        assert source == "cache" and result["resources"][0]["id"] == "a"
+        assert cache.read_bytes() == good_copy  # a bad answer never replaces the cache
+
+
 def test_metadata_caches_are_isolated_per_dataset(settings):
     a, b = make_spec("a"), make_spec("b")
     ci.get_metadata(FakeSession({api(a): metadata([make_resource("from_a")])}), a, settings)
@@ -446,6 +489,32 @@ def test_html_payload_is_rejected_and_nothing_written(settings):
     report = ci.ingest_dataset(FakeSession(routes), spec, settings, "run1")
     assert "HTML payload" in report.failed[0][1]
     assert ci.completed_files(ci.dataset_landing_dir(settings, spec)) == set()
+
+
+def test_empty_download_is_rejected_nothing_written_and_a_rerun_fills_it(settings):
+    spec = make_spec()
+    good, empty = make_resource("good", created="2014"), make_resource("empty", created="2015")
+    routes = {api(spec): metadata([good, empty]),
+              good["url"]: FakeResponse(200, b"ok", XLSX),
+              empty["url"]: FakeResponse(200, b"", XLSX)}
+
+    report = ci.ingest_dataset(FakeSession(routes), spec, settings, "run1")
+
+    # The empty body is a failure for that file only; the other file still lands.
+    assert not report.ok
+    assert [rid for rid, _msg in report.failed] == ["empty"]
+    assert "empty payload" in report.failed[0][1]
+    assert report.downloaded == ["good_data_en.xlsx"]
+    landing = ci.dataset_landing_dir(settings, spec)
+    assert ci.completed_files(landing) == {"good_data_en.xlsx"}
+    # No empty file and no temp file was left behind either.
+    leftovers = [n for _d, _s, names in os.walk(landing) for n in names]
+    assert leftovers == ["good_data_en.xlsx"]
+
+    routes[empty["url"]] = FakeResponse(200, b"later", XLSX)
+    rerun = ci.ingest_dataset(FakeSession(routes), spec, settings, "run2")
+    assert rerun.ok and rerun.downloaded == ["empty_data_en.xlsx"]
+    assert rerun.skipped == ["good_data_en.xlsx"]
 
 
 # ---------------------------------------------------------------------------
@@ -540,6 +609,60 @@ def test_snapshot_with_last_modified_still_skips_without_downloading(settings):
 # ---------------------------------------------------------------------------
 
 
+def test_utc_run_id_has_a_fixed_format_that_sorts_by_time():
+    def at(*args):
+        return ci._utc_run_id(lambda: datetime(*args, tzinfo=timezone.utc))
+
+    assert at(2026, 10, 29, 19, 53, 0) == "20261029T195300Z"
+    moments = [(2025, 12, 31, 23, 59, 59), (2026, 1, 1, 0, 0, 0), (2026, 1, 1, 0, 0, 1),
+               (2026, 1, 1, 9, 0, 0), (2026, 1, 1, 10, 0, 0), (2026, 10, 9, 9, 9, 9)]
+    ids = [at(*m) for m in moments]
+    assert ids == sorted(ids)  # the checks compare run ids as text to find "the previous run"
+
+
+def test_utc_run_id_defaults_to_the_current_utc_time():
+    before = datetime.now(timezone.utc).replace(microsecond=0)
+    run_id = ci._utc_run_id()
+    after = datetime.now(timezone.utc)
+    assert re.fullmatch(r"\d{8}T\d{6}Z", run_id)
+    parsed = datetime.strptime(run_id, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+    assert before <= parsed <= after + timedelta(seconds=1)
+
+
+def test_run_ingestion_names_the_run_itself_when_given_no_run_id(settings):
+    assert re.fullmatch(r"\d{8}T\d{6}Z", ci.run_ingestion([], settings, FakeSession({})).run_id)
+    assert ci.run_ingestion([], settings, FakeSession({}), run_id="custom1").run_id == "custom1"
+
+
+def test_run_ids_are_accepted_by_the_checks_validator():
+    import ingestion_checks  # the post-ingestion checks read run logs by run id
+
+    assert ingestion_checks.validate_run_id(ci._utc_run_id()) is not None
+
+
+# ---------------------------------------------------------------------------
+# HTTP session
+# ---------------------------------------------------------------------------
+
+
+def test_build_session_identifies_itself_and_retries_throttling_and_server_errors():
+    session = ci.build_session("mapledata test agent", total_retries=3, backoff_factor=0.5)
+    assert session.headers["User-Agent"] == "mapledata test agent"
+
+    retry = session.get_adapter("https://open.canada.ca/data/api/action").max_retries
+    assert retry.total == 3 and retry.backoff_factor == 0.5
+    assert set(retry.status_forcelist) == {429, 500, 502, 503, 504} == set(ci.RETRYABLE_STATUS)
+    assert set(retry.allowed_methods) == {"GET"}
+    # The last 504 must come back as a response, so our own check names the status
+    # instead of urllib3 raising a MaxRetryError.
+    assert retry.raise_on_status is False
+
+
+def test_build_session_defaults_to_five_retries_with_a_five_second_backoff():
+    retry = ci.build_session("agent").get_adapter("https://x.example").max_retries
+    assert (retry.total, retry.backoff_factor) == (5, 5.0)
+
+
 def test_run_isolates_datasets_and_continues_after_dataset_failure(settings):
     ok_spec = make_spec("ok_ds")
     # A distinct base_url, so the fake session can route it to a 504.
@@ -579,6 +702,26 @@ def test_no_temp_files_left_and_meta_kept_out_of_landing(settings):
     for dirpath, _dirs, files in os.walk(settings.landing_root):
         assert not any(f.startswith(ci.TMP_PREFIX) for f in files)
         assert not any(f.endswith(".json") for f in files)  # metadata stays in meta_root
+
+
+def test_a_stale_temp_file_is_not_counted_as_landed_and_the_download_replaces_it(settings):
+    # A crash between writing the temp file and renaming it leaves "_tmp_..." behind.
+    # It must not count as a completed file, or the real file would be skipped for good.
+    spec = make_spec()
+    res = make_resource("a")
+    landing = ci.dataset_landing_dir(settings, spec)
+    landing.mkdir(parents=True)
+    stale = landing / f"{ci.TMP_PREFIX}a_data_en.xlsx"
+    stale.write_bytes(b"partial")
+    assert ci.completed_files(landing) == set()
+
+    routes = {api(spec): metadata([res]), res["url"]: FakeResponse(200, b"full", XLSX)}
+    report = ci.ingest_dataset(FakeSession(routes), spec, settings, "run1")
+
+    assert report.ok and report.downloaded == ["a_data_en.xlsx"] and report.skipped == []
+    assert (landing / "a_data_en.xlsx").read_bytes() == b"full"
+    assert not stale.exists()  # the rename consumed the temp file
+    assert ci.completed_files(landing) == {"a_data_en.xlsx"}
 
 
 # ---------------------------------------------------------------------------
