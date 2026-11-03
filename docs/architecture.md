@@ -92,8 +92,7 @@ Every entry has a `status` and a `purpose`:
 `excluded` entry cannot keep a placeholder purpose (one starting with `TODO`,
 as written by discovery); candidates and deprecated entries may. An `excluded`
 entry still counts as registered, so discovery stops proposing it. Only `active`
-entries are ingested. The old `enabled` flag is gone; the parser
-rejects it with a pointer to `status`.
+entries are ingested.
 
 ### Dataset discovery
 
