@@ -18,6 +18,12 @@ the dataset's `metadata_modified` is 2026-10-20 (see
 [open_canada.md](../sources/open_canada.md)). `metadata_modified` can also stay
 unchanged after a file's content is replaced, which would hide an update.
 
+The portal's other file metadata does not help either. On 2026-11-03, all 52
+resources of `ircc_permanent_residents_monthly` had an empty `hash`, `size`,
+`mimetype` and `last_modified`; only `created` was filled. CKAN documents these
+fields as optional, so the publisher decides whether to fill them. This is
+further evidence for the decision below, which is unchanged.
+
 ## Decision
 
 Path of a file inside the dataset's landing folder:

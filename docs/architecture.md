@@ -91,16 +91,32 @@ rejects it with a pointer to `status`.
 
 ### Dataset discovery
 
-`tools/discover_datasets` searches a CKAN portal with one or more
-comma-separated keywords (all result pages of each) and appends one row per
-dataset to `metadata.ckan_dataset_snapshot`. A dataset found by several
-keywords is recorded once per run, with all of them in `search_queries`. If
-any search fails, the run fails and writes nothing. Rows of one run (all
-keywords) share `run_id` and `discovered_at`; `is_registered` says whether
-`config/datasets.yml` already lists the dataset (matched by CKAN id or name,
-same portal, any `status`). Rows are never deduplicated, so the table is a
-history; `metadata.ckan_dataset_current` keeps the newest row per `ckan_id`
-(`QUALIFY row_number()`). Discovery only prints draft registry entries (as
+`tools/discover_datasets` searches a CKAN portal and appends one row per
+dataset to `metadata.ckan_dataset_snapshot`. It has two modes, which can be
+combined:
+
+- **Organizations** (`organizations` widget, e.g. `cic,esdc-edsc`): each
+  organization is paged with `fq=organization:<name>` and no `q`, which lists
+  every dataset of that publisher. `organization_show` is not used because it
+  returns only the first 10 datasets. The standard run uses
+  `cic,esdc-edsc,irb-cisr,cbsa-asfc`.
+- **Keywords** (`query` widget): comma-separated full-text searches (all result
+  pages of each), used to find publishers we do not know yet.
+
+There is no subject filter (see
+[open_canada.md](sources/open_canada.md#discovery-scope)). Every paged request
+sends `sort=name asc` so paging is stable, and `rows` is at most 1000.
+
+A dataset found by several searches is recorded once per run, with all of them
+in `search_queries` (keywords as typed, organizations as `org:<name>`). If any
+search fails, the run fails and writes nothing. Rows of one run share `run_id`
+and `discovered_at`; `is_registered` says whether `config/datasets.yml`
+already lists the dataset (matched by CKAN id or name, same portal, any
+`status`; the API version segment of the base URL is ignored). Rows are never
+deduplicated, so the table is a history; `metadata.ckan_dataset_current` keeps
+the newest row per `ckan_id` (`QUALIFY row_number()`). The run ends with a
+recall check: registry datasets (active or candidate, same portal) that the
+run did not find, relative to its search scope. Discovery only prints draft registry entries (as
 `candidate`, with a placeholder `purpose` to fill in); adding a dataset stays a
 manual, reviewed change to the registry.
 
