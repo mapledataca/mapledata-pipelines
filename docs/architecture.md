@@ -219,10 +219,16 @@ of its last appearance.
   commits and a failure in between loses rows. When there is nothing to write,
   the notebook runs a `DELETE` with the same predicate, because the page
   documents the empty-source case only for SQL `REPLACE WHERE`.
-- **Not verified.** The Delta write and the DDL have only been exercised by
-  unit tests, not in a workspace. Observed 2026-11-02: all 39 IRCC CSV files
-  were read and no file head matched; every match came from the resource name.
-  Whether the tails match has not been seen yet.
+- **Validated in Databricks, and what is not.** Validated on 2026-11-02 and 03
+  (run `20261103T004037Z`): the snapshot and findings are written; all 39 IRCC
+  CSV files were read and neither a file head nor a file tail matched, so every
+  rounded marker comes from the resource name; `rounded_marker` was written for
+  every row of the run (0 NULL) and the marked counts match the findings
+  (permanent residents 16, study permits 3, TR→PR 4, work permits 1);
+  `description_mentions_archived` was reported for the annual and quarterly ESDC
+  statistics, `dataset_archived` is no longer set for them, and there were no
+  WARNs. Not validated yet: the view-order fix of `build_setup_plan`, which
+  needs a bootstrap run after a schema change.
 
 ## 4. Transformation (planned)
 

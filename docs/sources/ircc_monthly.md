@@ -60,11 +60,14 @@ the quirk below and ADR 0005.
   rounded cells. Observed 2026-11-02 on the live `package_show` metadata
   (`rounded_values` check, resource names): permanent residents 16 of 16
   selected resources, TR→PR 4 of 4, study permits 3 of 6, work permits 1 of 13.
-  Observed 2026-11-02 in Databricks: all 39 IRCC CSV files were read and no file
-  head matched, so every match came from a resource name. A resource without
-  the marker may still be rounded: absence of the marker does not mean the
-  values are exact, so the snapshot's `rounded_marker = false` is never a
-  licence to sum.
+  Observed in Databricks: on 2026-11-02 all 39 IRCC CSV files were read and no
+  file head matched; on 2026-11-03 (run `20261103T004037Z`) heads and tails were
+  read, and again no `file_head` and no `file_tail` matched, so every marker
+  comes from a resource name. The snapshot's `rounded_marker` was written for
+  every row of that run (0 NULL) and the marked counts match the findings:
+  permanent residents 16, study permits 3, TR→PR 4, work permits 1. A resource
+  without the marker may still be rounded: absence of the marker does not mean
+  the values are exact, so `rounded_marker = false` is never a licence to sum.
 - **Some tables exist only as XLSX.** Observed 2026-11-02 on the live
   `package_show` metadata. Evidence: the `format_gap` check reports at least 2
   tables only as XLSX for `ircc_permanent_residents_monthly`, at least 3 for
@@ -98,14 +101,18 @@ the quirk below and ADR 0005.
 - How are the CSV and XLSX versions of one table paired, so that bronze can use
   the CSV when both exist (ADR 0005)? Their names rarely match: permanent
   residents has 16 CSV and 18 XLSX resources and no matching pair by name.
-- Does "rounded" appear at the end of the landed CSV files (a footnote)? The
-  file heads do not carry it (2026-11-02); the tail check of `rounded_values`
-  has not run on landed IRCC files yet.
 - Do the XLSX files carry the marker inside the workbook? Only CSV files are
   read for the marker, so XLSX resources are judged by their names alone.
 - Are resources without the marker rounded too? Absence of the marker is not
   evidence that the values are exact; the publisher's documentation would have
   to say.
+
+## Resolved questions
+
+- Does "rounded" appear in the head or at the end of the landed CSV files (a
+  footnote)? No. Validated 2026-11-03 in Databricks (run `20261103T004037Z`):
+  all 39 IRCC CSV files were read, with no `file_head` and no `file_tail`
+  match. The marker is only in the resource names.
 
 ## History
 
