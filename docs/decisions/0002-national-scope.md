@@ -6,13 +6,18 @@
 ## Context
 
 mapledata.io presents Manitoba first, but the sources publish national data and
-other provinces will follow.
+other provinces will follow. Some sources publish finer geographies than
+provinces (for example, the permanent residents census-subdivision file), and
+small geographies are the most affected by rounding.
 
 ## Decision
 
-No province filter in ingestion, bronze or silver. Province filtering happens in
-gold (as a `province_code` dimension) or on the website. Manitoba is the first
-presentation, not a data boundary.
+National scope at every published geographic level: province, census
+metropolitan area (CMA), census subdivision (CSD) and institution. No province
+filter in ingestion, bronze or silver. Province filtering happens only in gold
+(as a `province_code` dimension) or on the website. Manitoba is the first
+presentation, not a data boundary. A parent total comes from the rows the
+source publishes for it, never from summing its children.
 
 ## Alternatives considered
 

@@ -9,10 +9,16 @@ quirks, open questions) is in [sources/](sources/).
 
 ## 1. Scope
 
-- **National data, provincial presentation.** Ingestion, bronze and silver
-  keep data for all of Canada. Filtering to a province happens only in gold
-  (as a `province_code` dimension) or in the website. Expanding to another
-  province is a parameter change, not a pipeline rebuild.
+- **National scope at every published geographic level; Manitoba-first
+  presentation.** Ingestion, bronze and silver keep every geography a source
+  publishes for all of Canada: province, census metropolitan area (CMA),
+  census subdivision (CSD, i.e. city or municipality) and institution. Some
+  sources are finer than provinces (for example, the permanent residents CSD
+  file). Filtering to a province happens only in gold (as a `province_code`
+  dimension) or in the website, and the website presents Manitoba first.
+  Expanding to another province is a parameter change, not a pipeline rebuild.
+  Small geographies are the most affected by rounding, so a parent total comes
+  from the rows the source publishes for it, never from summing its children.
 - **Aggregates only.** No person-level datasets (for example, no scraping of
   physician registries into per-person records).
 
