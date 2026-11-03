@@ -9,12 +9,15 @@
 #   candidate   registered but not ingested yet (under evaluation)
 #   active      ingested by run_ingestion
 #   deprecated  kept for the record, no longer ingested
-#   excluded    reviewed and rejected; never ingested. purpose gives the reason
+#   excluded    reviewed and rejected; never ingested. purpose starts with a
+#               reason code (stale:, pdf_only:, duplicate:, out_of_scope:,
+#               other:) and a short explanation, e.g.
+#               "duplicate: same as ircc_permanent_residents_monthly at national level"
 # Discovery (tools/discover_datasets) treats an entry of any status as registered.
 #
 # purpose: why the dataset is wanted and where it will be used (for an excluded
-# entry: why it was rejected). An active or excluded entry must not start with
-# "TODO" (the placeholder discovery writes into drafts).
+# entry: reason code and why it was rejected). An active or excluded entry must
+# not start with "TODO" (the placeholder discovery writes into drafts).
 #
 # update_pattern:
 #   new_file_per_period  publisher adds a new file each period

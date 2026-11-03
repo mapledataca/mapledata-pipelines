@@ -88,7 +88,9 @@ Every entry has a `status` and a `purpose`:
 | `excluded` | reviewed and rejected; never ingested |
 
 `purpose` records why the dataset is wanted and where it will be used; for an
-`excluded` entry it states why the dataset was rejected. An `active` or
+`excluded` entry it starts with a reason code (`stale:`, `pdf_only:`,
+`duplicate:`, `out_of_scope:` or `other:`) followed by a short explanation,
+which the parser checks. An `active` or
 `excluded` entry cannot keep a placeholder purpose (one starting with `TODO`,
 as written by discovery); candidates and deprecated entries may. An `excluded`
 entry still counts as registered, so discovery stops proposing it. Only `active`

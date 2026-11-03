@@ -193,11 +193,13 @@ def test_parse_registry_requires_status_and_purpose_keys():
 
 @pytest.mark.parametrize("status", ci.STATUSES)
 def test_parse_registry_accepts_every_status_and_trims_purpose(status):
+    # An excluded purpose must start with a reason code.
+    prefix = "other: " if status == ci.STATUS_EXCLUDED else ""
     (spec,) = ci.parse_registry(
-        {"datasets": [make_entry(status=status, purpose="  Why we need it.  ")]}
+        {"datasets": [make_entry(status=status, purpose=f"  {prefix}Why we need it.  ")]}
     )
     assert spec.status == status
-    assert spec.purpose == "Why we need it."
+    assert spec.purpose == f"{prefix}Why we need it."
 
 
 def test_parse_registry_rejects_legacy_enabled_and_says_what_to_write():
@@ -224,19 +226,56 @@ def test_parse_registry_rejects_todo_purpose_on_excluded_entry(purpose):
         )
 
 
-def test_parse_registry_accepts_excluded_entry_with_a_reason():
+@pytest.mark.parametrize("code", ci.EXCLUSION_REASONS)
+def test_parse_registry_accepts_every_exclusion_reason_code(code):
     (spec,) = ci.parse_registry(
         {
             "datasets": [
-                make_entry(
-                    status="excluded",
-                    purpose="Reviewed 2026-11-03: duplicate of ircc_permanent_residents_monthly",
-                )
+                make_entry(status="excluded", purpose=f"{code} short explanation")
             ]
         }
     )
     assert spec.status == ci.STATUS_EXCLUDED
-    assert "duplicate" in spec.purpose
+    assert spec.purpose == f"{code} short explanation"
+
+
+def test_exclusion_reason_codes_are_the_documented_five():
+    assert ci.EXCLUSION_REASONS == (
+        "stale:", "pdf_only:", "duplicate:", "out_of_scope:", "other:"
+    )
+
+
+@pytest.mark.parametrize(
+    "purpose",
+    [
+        "Reviewed: duplicate of something",  # no reason code first
+        "duplicate same as the monthly dataset",  # colon missing
+        "Duplicate: same as the monthly dataset",  # codes are lower-case
+        "unknown: some reason",
+        "see notes",
+    ],
+)
+def test_parse_registry_rejects_excluded_purpose_without_a_reason_code(purpose):
+    with pytest.raises(ci.RegistryError, match="must start with one of"):
+        ci.parse_registry(
+            {"datasets": [make_entry(status=ci.STATUS_EXCLUDED, purpose=purpose)]}
+        )
+
+
+@pytest.mark.parametrize("purpose", ["other:", "stale:   ", "duplicate:"])
+def test_parse_registry_rejects_excluded_reason_code_without_explanation(purpose):
+    with pytest.raises(ci.RegistryError, match="needs a short explanation"):
+        ci.parse_registry(
+            {"datasets": [make_entry(status=ci.STATUS_EXCLUDED, purpose=purpose)]}
+        )
+
+
+@pytest.mark.parametrize("status", [ci.STATUS_ACTIVE, ci.STATUS_CANDIDATE, ci.STATUS_DEPRECATED])
+def test_reason_code_is_required_only_for_excluded_entries(status):
+    (spec,) = ci.parse_registry(
+        {"datasets": [make_entry(status=status, purpose="No reason code needed")]}
+    )
+    assert spec.purpose == "No reason code needed"
 
 
 @pytest.mark.parametrize("status", [ci.STATUS_CANDIDATE, ci.STATUS_DEPRECATED])

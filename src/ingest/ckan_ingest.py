@@ -77,6 +77,10 @@ STATUS_DEPRECATED = "deprecated"
 STATUS_EXCLUDED = "excluded"
 STATUSES = (STATUS_CANDIDATE, STATUS_ACTIVE, STATUS_DEPRECATED, STATUS_EXCLUDED)
 
+#: An excluded entry's purpose starts with one of these reason codes, followed
+#: by a short explanation, e.g. "duplicate: same as <key> at national level".
+EXCLUSION_REASONS = ("stale:", "pdf_only:", "duplicate:", "out_of_scope:", "other:")
+
 #: Prefix for temporary files. Spark file sources (including Auto Loader)
 #: ignore names starting with "_" or ".", so partial downloads stay invisible.
 TMP_PREFIX = "_tmp_"
@@ -134,7 +138,8 @@ class DatasetSpec:
                         the record, not ingested) or STATUS_EXCLUDED (reviewed
                         and rejected, never ingested).
         purpose:        Why the dataset is wanted and where it will be used;
-                        for an excluded entry, why it was rejected.
+                        for an excluded entry, a reason code
+                        from EXCLUSION_REASONS and why it was rejected.
         source:        Folder-safe name of the portal, e.g. "open_canada".
         base_url:       CKAN Action API base URL (".../api/3/action").
         languages:      Keep resources tagged with any of these languages.
@@ -302,6 +307,19 @@ def parse_registry(raw: dict) -> list:
                 raise RegistryError(
                     f"{where}: an excluded entry needs its purpose to state "
                     f"why it was rejected, not a TODO placeholder"
+                )
+        if merged["status"] == STATUS_EXCLUDED:
+            code = next(
+                (c for c in EXCLUSION_REASONS if merged["purpose"].startswith(c)), None
+            )
+            if code is None:
+                raise RegistryError(
+                    f"{where}: an excluded entry's purpose must start with one of "
+                    f"{EXCLUSION_REASONS}, then a short explanation"
+                )
+            if not merged["purpose"][len(code):].strip():
+                raise RegistryError(
+                    f"{where}: after '{code}' an excluded entry needs a short explanation"
                 )
 
         if merged["key"] in seen:
