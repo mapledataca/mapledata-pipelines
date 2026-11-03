@@ -412,9 +412,124 @@ def test_search_many_fails_whole_run_when_any_keyword_fails():
     assert "c" not in session.requests  # stopped at the failure
 
 
-def test_search_many_requires_a_keyword():
-    with pytest.raises(ValueError):
+def test_search_many_requires_a_keyword_or_an_organization():
+    with pytest.raises(ValueError, match="keyword or organization"):
         cd.search_many(KeywordSession({}), [], BASE, sleep=no_sleep)
+
+
+# --- organization mode -------------------------------------------------------
+
+
+class SearchSession:
+    """Serves package_search by q (keyword) or fq (organization filter)."""
+
+    def __init__(self, by_term, failing=()):
+        self.by_term = by_term  # "a" for q=a, "organization:cic" for fq
+        self.failing = set(failing)
+        self.requests = []
+
+    def get(self, url, params=None, timeout=None):
+        self.requests.append(dict(params))
+        term = params.get("q") or params.get("fq")
+        if term in self.failing:
+            return FakeResponse(504, content_type="text/html")
+        found = self.by_term[term]
+        page = found[params["start"] : params["start"] + params["rows"]]
+        return FakeResponse(
+            payload={"success": True, "result": {"count": len(found), "results": page}}
+        )
+
+
+def test_search_organization_filters_with_fq_and_sends_no_q():
+    session = SearchSession({"organization:cic": [make_package(n) for n in range(5)]})
+    found = cd.search_organization(session, "cic", BASE, page_size=2, sleep=no_sleep)
+    assert len(found) == 5 and len(session.requests) == 3
+    for params in session.requests:
+        assert params["fq"] == "organization:cic"
+        assert "q" not in params
+        assert params["sort"] == "name asc" and params["facet.limit"] == -1
+
+
+def test_search_organization_checks_page_size_and_name_before_any_request():
+    session = SearchSession({})
+    with pytest.raises(ValueError, match="page_size"):
+        cd.search_organization(session, "cic", BASE, page_size=1001, sleep=no_sleep)
+    with pytest.raises(ValueError, match="organization"):
+        cd.search_organization(session, "x OR y", BASE, sleep=no_sleep)
+    assert session.requests == []
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ("cic", ["cic"]),
+        (" cic , esdc-edsc,,irb_cisr ", ["cic", "esdc-edsc", "irb_cisr"]),
+        ("cic,cic", ["cic"]),
+        ("", []),
+        (" , ", []),
+    ],
+)
+def test_parse_organizations(text, expected):
+    assert cd.parse_organizations(text) == expected
+
+
+@pytest.mark.parametrize("text", ["CIC", "cic;", "esdc edsc", "cic:x", "-cic", "a OR b"])
+def test_parse_organizations_rejects_names_that_could_alter_the_filter(text):
+    with pytest.raises(ValueError, match="invalid organization name"):
+        cd.parse_organizations(text)
+
+
+def test_search_many_merges_keywords_and_organizations_by_ckan_id():
+    session = SearchSession(
+        {
+            "lmia": [make_package(1), make_package(2)],
+            "organization:cic": [make_package(2), make_package(3)],
+            "organization:esdc-edsc": [make_package(1)],
+        }
+    )
+    packages, matches = cd.search_many(
+        session,
+        ["lmia"],
+        BASE,
+        sleep=no_sleep,
+        organizations=["cic", "esdc-edsc"],
+    )
+    assert [p["id"] for p in packages] == ["id-1", "id-2", "id-3"]
+    assert matches == {
+        "id-1": ["lmia", "org:esdc-edsc"],
+        "id-2": ["lmia", "org:cic"],
+        "id-3": ["org:cic"],
+    }
+
+
+def test_search_many_accepts_organizations_alone_and_pauses_between_searches():
+    pauses = []
+    session = SearchSession(
+        {"organization:a": [make_package(1)], "organization:b": [make_package(2)]}
+    )
+    _, matches = cd.search_many(
+        session, [], BASE, pause_seconds=3.0, sleep=pauses.append, organizations=["a", "b"]
+    )
+    assert matches == {"id-1": ["org:a"], "id-2": ["org:b"]}
+    assert pauses == [3.0]
+
+
+def test_search_many_fails_whole_run_when_an_organization_search_fails():
+    session = SearchSession(
+        {"a": [make_package(1)], "organization:cic": []},
+        failing=["organization:cic"],
+    )
+    with pytest.raises(ci.UpstreamError):
+        cd.search_many(session, ["a"], BASE, sleep=no_sleep, organizations=["cic"])
+
+
+def test_organization_search_label_lands_in_snapshot_search_queries():
+    session = SearchSession({"organization:cic": [make_package(1)]})
+    packages, matches = cd.search_many(
+        session, [], BASE, sleep=no_sleep, organizations=["cic"]
+    )
+    (row,) = cd.build_snapshot_rows(packages, [], BASE, matches, NOW, RUN_ID)
+    assert row["search_queries"] == ["org:cic"]
 
 
 def test_multi_keyword_run_yields_one_row_per_dataset_sharing_run_values():

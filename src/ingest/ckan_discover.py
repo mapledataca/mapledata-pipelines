@@ -26,6 +26,13 @@ MAX_KEY_LENGTH = 50
 #: less); bigger pages are rejected before any request is sent.
 MAX_PAGE_SIZE = 1000
 
+#: CKAN organization names: lower-case letters, digits, "-" and "_". Checked
+#: before a name goes into a Solr filter query.
+_ORGANIZATION_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+
+#: Prefix of the search_queries entry recorded for an organization search.
+ORGANIZATION_LABEL = "org:"
+
 #: Sent with every paged package_search. A total order makes `start` paging
 #: stable; the default (score, then modified) reshuffles as datasets change.
 SEARCH_SORT = "name asc"
@@ -101,6 +108,31 @@ def _search_page(
     return count, results
 
 
+def _search_all(
+    session: Any,
+    params: dict,
+    base_url: str,
+    page_size: int,
+    timeout: tuple,
+    pause_seconds: float,
+    sleep: Callable[[float], None],
+) -> list:
+    """Page through one package_search (params = its q and/or fq)."""
+    if not 1 <= page_size <= MAX_PAGE_SIZE:
+        raise ValueError(f"page_size must be between 1 and {MAX_PAGE_SIZE}")
+    packages, seen, start = [], set(), 0
+    while True:
+        count, page = _search_page(session, params, base_url, page_size, start, timeout)
+        for package in page:
+            if package.get("id") not in seen:
+                seen.add(package.get("id"))
+                packages.append(package)
+        start += len(page)
+        if not page or start >= count:
+            return packages
+        sleep(pause_seconds)
+
+
 def search_packages(
     session: Any,
     query: str,
@@ -110,7 +142,7 @@ def search_packages(
     pause_seconds: float = 1.0,
     sleep: Callable[[float], None] = time.sleep,
 ) -> list:
-    """Return every package matching the query, fetching all pages.
+    """Return every package matching the keyword query, fetching all pages.
 
     Pages advance by the number of packages actually returned, so a server that
     caps `rows` below page_size is still read to the end. An empty page stops
@@ -122,21 +154,40 @@ def search_packages(
         ci.UpstreamError: non-200 status, non-JSON body or success=false.
         requests.RequestException: network-level failures.
     """
-    if not 1 <= page_size <= MAX_PAGE_SIZE:
-        raise ValueError(f"page_size must be between 1 and {MAX_PAGE_SIZE}")
-    packages, seen, start = [], set(), 0
-    while True:
-        count, page = _search_page(
-            session, {"q": query}, base_url, page_size, start, timeout
-        )
-        for package in page:
-            if package.get("id") not in seen:
-                seen.add(package.get("id"))
-                packages.append(package)
-        start += len(page)
-        if not page or start >= count:
-            return packages
-        sleep(pause_seconds)
+    return _search_all(
+        session, {"q": query}, base_url, page_size, timeout, pause_seconds, sleep
+    )
+
+
+def search_organization(
+    session: Any,
+    organization: str,
+    base_url: str = ci.DEFAULT_BASE_URL,
+    page_size: int = 100,
+    timeout: tuple = (10, 60),
+    pause_seconds: float = 1.0,
+    sleep: Callable[[float], None] = time.sleep,
+) -> list:
+    """Return every package of one organization, fetching all pages.
+
+    Filters with fq=organization:<name> and sends no q. organization_show is
+    not used: it returns only the first 10 datasets. Paging and errors work as
+    in search_packages.
+
+    Raises:
+        ValueError: organization is not a valid CKAN name, or bad page_size.
+    """
+    if not _ORGANIZATION_NAME.match(organization):
+        raise ValueError(f"invalid organization name {organization!r}")
+    return _search_all(
+        session,
+        {"fq": f"organization:{organization}"},
+        base_url,
+        page_size,
+        timeout,
+        pause_seconds,
+        sleep,
+    )
 
 
 def parse_queries(text: str) -> list:
@@ -154,44 +205,75 @@ def parse_queries(text: str) -> list:
     return queries
 
 
+def parse_organizations(text: str) -> list:
+    """Organization names from a comma-separated string, e.g. "cic, esdc-edsc".
+
+    Whitespace is trimmed, empty items are dropped and repeats keep their first
+    position. Names are CKAN organization names and are never altered:
+    "CIC" is rejected rather than silently lower-cased.
+
+    Raises:
+        ValueError: an item is not a valid organization name.
+    """
+    names = []
+    for item in text.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        if not _ORGANIZATION_NAME.match(item):
+            raise ValueError(
+                f"invalid organization name {item!r}: use lower-case letters, "
+                f"digits, '-' and '_' (the name shown in the portal URL)"
+            )
+        if item not in names:
+            names.append(item)
+    return names
+
+
 def search_many(
     session: Any,
-    queries: Iterable,
+    queries: Iterable = (),
     base_url: str = ci.DEFAULT_BASE_URL,
     page_size: int = 100,
     timeout: tuple = (10, 60),
     pause_seconds: float = 1.0,
     sleep: Callable[[float], None] = time.sleep,
+    organizations: Iterable = (),
 ) -> tuple:
-    """Search each keyword in turn and merge the results by ckan_id.
+    """Run every keyword search, then every organization search, and merge by ckan_id.
 
     Returns (packages, matches): packages holds each dataset once, with the
     content of the first search that found it; matches maps ckan_id to the
-    keywords that found it, in keyword order.
+    searches that found it, in search order. A keyword is recorded as typed and
+    an organization as "org:<name>".
 
     Any failing search raises, so a run never yields partial results.
 
     Raises:
-        ValueError: no keywords given.
+        ValueError: neither keywords nor organizations given, or an invalid
+            organization name or page_size.
         ci.UpstreamError, requests.RequestException: see search_packages.
     """
-    queries = list(queries)
-    if not queries:
-        raise ValueError("at least one search keyword is required")
+    queries, organizations = list(queries), list(organizations)
+    if not queries and not organizations:
+        raise ValueError("at least one search keyword or organization is required")
+
+    searches = [(q, search_packages, q) for q in queries]
+    searches += [(ORGANIZATION_LABEL + o, search_organization, o) for o in organizations]
 
     packages, matches = [], {}
-    for index, query in enumerate(queries):
+    for index, (label, search, term) in enumerate(searches):
         if index:
             sleep(pause_seconds)
-        for package in search_packages(
-            session, query, base_url, page_size, timeout, pause_seconds, sleep
+        for package in search(
+            session, term, base_url, page_size, timeout, pause_seconds, sleep
         ):
             ckan_id = package.get("id")
             if ckan_id not in matches:
                 matches[ckan_id] = []
                 packages.append(package)
-            if query not in matches[ckan_id]:
-                matches[ckan_id].append(query)
+            if label not in matches[ckan_id]:
+                matches[ckan_id].append(label)
     return packages, matches
 
 

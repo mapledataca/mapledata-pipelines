@@ -1,7 +1,7 @@
 # Databricks notebook source
 # MAGIC %md
 # MAGIC # Discover CKAN datasets
-# MAGIC Search a CKAN portal, fetching every result page, and record what was
+# MAGIC Search a CKAN portal by keyword and/or organization, fetching every result page, and record what was
 # MAGIC found in `<catalog>.metadata.ckan_dataset_snapshot` (append-only; the view
 # MAGIC `ckan_dataset_current` keeps the latest row per dataset). Datasets missing
 # MAGIC from `config/datasets.yml` get a draft registry entry printed below.
@@ -14,8 +14,14 @@
 # MAGIC   Each keyword is searched in turn; a dataset found by several keywords is
 # MAGIC   recorded once, with all of them in `search_queries`. If any search fails,
 # MAGIC   the whole run fails and nothing is written.
+# MAGIC - `organizations`: comma-separated CKAN organization names, e.g.
+# MAGIC   `cic,esdc-edsc` (the name in the portal URL). Each is searched with
+# MAGIC   `fq=organization:<name>` and no keyword, which lists every dataset of
+# MAGIC   that publisher; recorded in `search_queries` as `org:<name>`. Use it
+# MAGIC   with or without `query`; at least one of the two is required. The
+# MAGIC   standard run uses `cic,esdc-edsc,irb-cisr,cbsa-asfc`.
 # MAGIC - `domain`: domain for the draft entries, e.g. `immigration`
-# MAGIC - `page_size`: results fetched per request
+# MAGIC - `page_size`: results fetched per request (1 to 1000)
 # MAGIC - `base_url`: CKAN Action API base URL
 # MAGIC - `catalog`: Unity Catalog catalog holding the `metadata` schema
 # MAGIC - `max_drafts`: most drafts to print (0 prints none)
@@ -24,6 +30,7 @@
 # COMMAND ----------
 
 dbutils.widgets.text("query", "")
+dbutils.widgets.text("organizations", "")
 dbutils.widgets.text("domain", "immigration")
 dbutils.widgets.text("page_size", "100")
 dbutils.widgets.text("base_url", "https://open.canada.ca/data/api/3/action")
@@ -47,19 +54,24 @@ import ckan_discover as cd
 import ckan_ingest as ci
 
 queries = cd.parse_queries(dbutils.widgets.get("query"))
-assert queries, "Set the 'query' widget first."
+organizations = cd.parse_organizations(dbutils.widgets.get("organizations"))
+assert queries or organizations, "Set the 'query' or 'organizations' widget first."
 base_url = dbutils.widgets.get("base_url")
 
 specs = ci.load_registry(str(root / "config" / "datasets.yml"))
 session = ci.build_session(dbutils.widgets.get("user_agent"))
 packages, matches = cd.search_many(
-    session, queries, base_url=base_url, page_size=int(dbutils.widgets.get("page_size"))
+    session,
+    queries,
+    base_url=base_url,
+    page_size=int(dbutils.widgets.get("page_size")),
+    organizations=organizations,
 )
 
-for query in queries:
-    found = sum(query in hit for hit in matches.values())
-    print(f"{query!r}: {found} datasets")
-print(f"{len(packages)} datasets after removing duplicates across keywords")
+for label in [*queries, *(cd.ORGANIZATION_LABEL + o for o in organizations)]:
+    found = sum(label in hit for hit in matches.values())
+    print(f"{label!r}: {found} datasets")
+print(f"{len(packages)} datasets after removing duplicates across searches")
 
 # One timestamp and run id for the whole run, shared by every row.
 discovered_at = datetime.now(timezone.utc)
