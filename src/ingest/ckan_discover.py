@@ -22,6 +22,14 @@ import ckan_ingest as ci
 #: Longest registry key the drafts will generate.
 MAX_KEY_LENGTH = 50
 
+#: Largest `rows` CKAN 2.12 documents for package_search (portals may configure
+#: less); bigger pages are rejected before any request is sent.
+MAX_PAGE_SIZE = 1000
+
+#: Sent with every paged package_search. A total order makes `start` paging
+#: stable; the default (score, then modified) reshuffles as datasets change.
+SEARCH_SORT = "name asc"
+
 #: Columns of mapledata.metadata.ckan_dataset_snapshot, in order. The table is
 #: created by catalog_setup.py, which keeps its own copy of this list; a test
 #: checks that the two agree.
@@ -54,12 +62,24 @@ SNAPSHOT_SCHEMA_DDL = ", ".join(f"{name} {kind}" for name, kind in SNAPSHOT_COLU
 
 
 def _search_page(
-    session: Any, query: str, base_url: str, rows: int, start: int, timeout: tuple
+    session: Any, params: dict, base_url: str, rows: int, start: int, timeout: tuple
 ) -> tuple:
-    """Fetch one package_search page; return (total_count, packages)."""
+    """Fetch one package_search page; return (total_count, packages).
+
+    params holds the search itself (q and/or fq); the paging and ordering
+    parameters are added here so every paged request carries them.
+    """
     response = session.get(
         base_url.rstrip("/") + "/package_search",
-        params={"q": query, "rows": rows, "start": start},
+        params={
+            **params,
+            "rows": rows,
+            "start": start,
+            "sort": SEARCH_SORT,
+            # Negative = no limit. Inert until facets are requested, but
+            # harmless; the documented default of 50 would truncate them.
+            "facet.limit": -1,
+        },
         timeout=timeout,
     )
     if response.status_code != 200:
@@ -98,12 +118,17 @@ def search_packages(
     once.
 
     Raises:
+        ValueError: page_size is outside 1..MAX_PAGE_SIZE.
         ci.UpstreamError: non-200 status, non-JSON body or success=false.
         requests.RequestException: network-level failures.
     """
+    if not 1 <= page_size <= MAX_PAGE_SIZE:
+        raise ValueError(f"page_size must be between 1 and {MAX_PAGE_SIZE}")
     packages, seen, start = [], set(), 0
     while True:
-        count, page = _search_page(session, query, base_url, page_size, start, timeout)
+        count, page = _search_page(
+            session, {"q": query}, base_url, page_size, start, timeout
+        )
         for package in page:
             if package.get("id") not in seen:
                 seen.add(package.get("id"))

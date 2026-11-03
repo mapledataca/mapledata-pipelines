@@ -115,6 +115,30 @@ def test_search_fetches_every_page_and_sends_start_and_rows():
     ]
 
 
+def test_every_paged_request_sends_sort_rows_and_facet_limit():
+    session = FakeSession([make_package(n) for n in range(5)])
+    cd.search_packages(session, "q", BASE, page_size=2, sleep=no_sleep)
+    assert len(session.requests) == 3
+    for _url, params in session.requests:
+        assert params["sort"] == "name asc"
+        assert params["facet.limit"] == -1
+        assert params["rows"] == 2
+
+
+@pytest.mark.parametrize("page_size", [0, -1, cd.MAX_PAGE_SIZE + 1])
+def test_search_rejects_page_size_outside_the_documented_range(page_size):
+    session = FakeSession([make_package(1)])
+    with pytest.raises(ValueError, match="page_size"):
+        cd.search_packages(session, "q", BASE, page_size=page_size, sleep=no_sleep)
+    assert session.requests == []
+
+
+def test_search_accepts_the_largest_documented_page_size():
+    session = FakeSession([make_package(1)])
+    cd.search_packages(session, "q", BASE, page_size=cd.MAX_PAGE_SIZE, sleep=no_sleep)
+    assert session.requests[0][1]["rows"] == 1000
+
+
 def test_search_stops_exactly_at_page_boundary():
     session = FakeSession([make_package(n) for n in range(200)])
     found = cd.search_packages(session, "q", BASE, page_size=100, sleep=no_sleep)
