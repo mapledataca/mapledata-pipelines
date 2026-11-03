@@ -2,6 +2,8 @@
 __pycache__/
 *.pyc
 .pytest_cache/
+.coverage
+htmlcov/
 
 # Data never belongs in Git; it lives in Unity Catalog volumes
 *.csv

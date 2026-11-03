@@ -76,6 +76,17 @@ CLAUDE.md                        instructions for AI coding agents
    It records what each dataset publishes and any findings in the `metadata`
    schema, and writes a report to `<meta_root>/reports/<run_id>.md`.
 
+## Local development
+
+```bash
+python -m pip install -r requirements-dev.txt   # requests, pyyaml, pytest, pytest-cov
+pytest -v tests/                                # no network, no Spark
+pytest --cov=src --cov-report=term-missing tests/   # optional coverage
+```
+
+`requirements.txt` lists only the runtime dependencies (`requests`, `pyyaml`).
+Line endings are LF in the repository (`.gitattributes`), also on Windows.
+
 ## Adding a dataset
 
 Add an entry to `config/datasets.yml` (see the comments in that file). Every

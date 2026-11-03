@@ -1,0 +1,4 @@
+# Local development: the runtime dependencies plus the test tools.
+-r requirements.txt
+pytest
+pytest-cov

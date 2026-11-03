@@ -12,8 +12,9 @@ immigration → cost of living → housing → health → education.
 ## Commands
 
 ```bash
-pip install requests pyyaml pytest   # local dev dependencies
+pip install -r requirements-dev.txt   # local dev dependencies (runtime + pytest, pytest-cov)
 pytest -v tests/                      # run all unit tests (no network, no Spark)
+pytest --cov=src --cov-report=term-missing tests/   # optional coverage (notebooks show 0%)
 CKAN_LIVE_TEST=1 pytest -v -k live tests/   # optional live smoke test
 ```
 
