@@ -1,0 +1,24 @@
+# Platform layout: the one place that names the Unity Catalog catalog and the
+# schema conventions (ADR 0007). Notebooks read the catalog from here; a
+# `catalog` widget may override it (for example, a test catalog).
+#
+# Schema names are layer first, lower-case snake_case:
+#   landing            volumes `raw` and `meta`; files are organized by source in the path
+#   metadata           platform metadata tables
+#   shared             conformed dimensions used by several domains
+#   bronze_<source>    one schema per registry `source`
+#   silver_<domain>    one schema per registry `domain`
+#   gold_<domain>      one schema per registry `domain`
+
+catalog: living_canada
+
+landing_schema: landing
+raw_volume: raw
+meta_volume: meta
+metadata_schema: metadata
+shared_schema: shared
+
+layer_prefixes:
+  bronze: bronze
+  silver: silver
+  gold: gold
