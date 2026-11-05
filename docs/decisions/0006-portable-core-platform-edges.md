@@ -83,3 +83,5 @@ the DuckDB and dbt documentation before relying on it.
 - Not yet decided: the exact boundary for transformation SQL (for example,
   whether `MERGE` counts as standard). Decide when the first silver model is
   written.
+
+See also ADR 0007 (catalog, schema layout and config-driven paths).

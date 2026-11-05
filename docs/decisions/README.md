@@ -15,6 +15,7 @@ Consequences.
 | [0004](0004-csv-first.md) | Ingest CSV first | Superseded by 0005 |
 | [0005](0005-prefer-csv-land-excel-too.md) | Prefer CSV, and also land Excel when a table has no CSV | Accepted |
 | [0006](0006-portable-core-platform-edges.md) | Portable core, platform-specific edges | Accepted |
+| [0007](0007-catalog-and-schema-layout.md) | Catalog and schema layout | Accepted |
 
 Source-specific findings (quirks, update patterns, open questions) live in
 [docs/sources/](../sources/).

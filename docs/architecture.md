@@ -25,32 +25,69 @@ quirks, open questions) is in [sources/](sources/).
 ## 2. Unity Catalog layout
 
 ```
-mapledata                          catalog
+living_canada                      catalog (named for its content)
 ├── landing                        schema: raw files
-│   ├── raw     (managed volume)   data files from the ingester
+│   ├── raw     (managed volume)   data files from the ingester, organized by source
 │   └── meta    (managed volume)   metadata cache + run logs
-├── shared                         schema: dim_geography, dim_noc, dim_date
+├── shared                         schema: conformed dimensions (dim_geography, dim_noc, dim_date)
 ├── metadata                       schema: platform metadata
 │   ├── ckan_dataset_snapshot      table: append-only discovery results
 │   ├── ckan_dataset_current       view: latest row per ckan_id
 │   ├── ckan_resource_snapshot     table: resources CKAN lists, per checked run
 │   ├── ckan_resource_current      view: latest row per resource_id
 │   └── ingestion_findings         table: post-ingestion check findings
-└── <domain>_bronze|silver|gold    one set of schemas per domain
+├── bronze_<source>                one schema per source, e.g. bronze_open_canada
+└── silver_<domain>, gold_<domain> one schema each per domain, e.g. silver_immigration
 ```
 
 - Created from zero by `src/platform/bootstrap_catalog` (idempotent).
-- Domains come from `config/datasets.yml`.
+  `dry_run` prints the full plan.
+- The catalog and the naming conventions are in `config/platform.yml`, read by
+  `src/platform/platform_config.py`; no code spells out a catalog name or a
+  `/Volumes/` path. A notebook's `catalog` widget may override the catalog, for
+  example to use a test catalog.
+- Bronze schemas are derived from the registry's `source` values, silver and
+  gold schemas from its `domain` values (lower-case snake_case, validated).
+  The current registry gives `bronze_open_canada`, `silver_immigration` and
+  `gold_immigration`.
 - Managed volumes: data is used only inside Databricks.
 - Metadata lives in its own volume, so Auto Loader on `raw` never reads it.
+- Reasons and alternatives: [ADR 0007](decisions/0007-catalog-and-schema-layout.md).
+
+### Naming rules
+
+- Layer first: `bronze_`, `silver_` and `gold_` prefixes; `landing`, `metadata`
+  and `shared` are fixed names.
+- Names are lower-case `snake_case`, for catalogs, schemas, tables, volumes and
+  registry keys.
+- Renaming a catalog, schema, table, view or column loses its lineage; announce
+  it before doing it.
+
+### Domain dependencies
+
+Domains are built in roadmap order: immigration, cost of living, housing,
+health, education. Dependencies between domains are one-way and follow that
+order: a later domain may read an earlier one, never the reverse, and every
+domain may read `shared`. There are no cycles. Today only the immigration
+domain exists, so there are no cross-domain dependencies yet.
+
+At silver and gold:
+
+- Read the other domain's table directly by its three-part name; Unity Catalog
+  records the lineage.
+- Use a consumer-side view only to adapt a table (subset, rename, filter), with
+  an explicit column list, never `SELECT *`, and one level only.
+- Promote a table to `shared` when three or more domains use it with one meaning.
 
 ### Landing paths
 
 ```
-/Volumes/mapledata/landing/raw/<source>/<dataset_key>/...
-/Volumes/mapledata/landing/meta/<source>/<dataset_key>/package_show.json
-/Volumes/mapledata/landing/meta/<source>/<dataset_key>/runs/<run_id>.json
+/Volumes/<catalog>/landing/raw/<source>/<dataset_key>/...
+/Volumes/<catalog>/landing/meta/<source>/<dataset_key>/package_show.json
+/Volumes/<catalog>/landing/meta/<source>/<dataset_key>/runs/<run_id>.json
 ```
+
+The volume paths are derived from the catalog in `config/platform.yml`.
 
 ## 3. Ingestion
 
@@ -301,11 +338,7 @@ of its last appearance.
 - Every chart on the website states its data year and source licence.
 - Use current Databricks product names (Lakeflow Jobs, Lakeflow Spark
   Declarative Pipelines, Declarative Automation Bundles, AUTO CDC, Git folders).
-- **Portable core, platform-specific edges.** Ingestion, checks and
-  file-parsing rules are pure Python, transformation SQL is standard where
-  possible, and Databricks features are used deliberately at the edges, so a
-  later DuckDB + dbt implementation can reuse the core
-  ([ADR 0006](decisions/0006-portable-core-platform-edges.md)).
+- Keep the core portable: see [Portability](#10-portability).
 
 ## 8. Metadata model
 
@@ -412,3 +445,34 @@ names; fix them when the first tables are built.
 - Free Edition: confirm outbound access per domain (`opendata.brandon.ca`
   timed out; `data.winnipeg.ca` and `open.canada.ca` reachable).
 - CIHI terms of use before publishing CIHI-derived charts.
+
+## 10. Portability
+
+The core is portable and platform features are used deliberately at the edges
+([ADR 0006](decisions/0006-portable-core-platform-edges.md); layout and
+config-driven names in
+[ADR 0007](decisions/0007-catalog-and-schema-layout.md)). A later implementation
+on DuckDB + dbt over the same raw files should be able to reuse the core:
+
+- ingestion and checks are pure Python;
+- file-parsing rules (multi-row headers, wide-to-long, `--` for a suppressed
+  count of 1 to 4, reading only the published sheet) are pure Python functions;
+- transformation SQL is standard SQL where possible; Databricks-only functions
+  are isolated and commented;
+- business rules are written in prose as well as enforced in expectations and
+  tests;
+- storage formats are open;
+- the catalog and paths come from `config/platform.yml`.
+
+Concept mapping (conceptual; check each equivalence in the DuckDB and dbt
+documentation before relying on it):
+
+| Databricks | DuckDB + dbt |
+|---|---|
+| Unity Catalog volume | Local folder or object storage |
+| Auto Loader | File glob plus a processed-files log, or a dbt incremental model |
+| Streaming tables, materialized views | dbt incremental and table models |
+| Pipeline expectations | dbt tests |
+| AUTO CDC | dbt snapshots |
+| Lakeflow Jobs, Declarative Automation Bundles | cron, GitHub Actions or an orchestrator |
+| Unity Catalog comments and lineage | dbt descriptions and lineage |

@@ -23,11 +23,13 @@ All tests must pass before committing.
 ## Repository map
 
 - `config/datasets.yml`: dataset registry. Adding a dataset = adding an entry.
+- `config/platform.yml`: catalog name and schema conventions; read by `src/platform/platform_config.py`.
 - `src/ingest/ckan_ingest.py`: generic CKAN ingester (pure Python, injected session).
 - `src/ingest/ckan_discover.py`: searches CKAN and drafts registry entries (used by `tools/discover_datasets.py`).
 - `src/ingest/run_ingestion.py`: Databricks notebook (source format) used as a job task.
 - `src/checks/ingestion_checks.py`: post-ingestion checks (pure Python): resource snapshot rows, findings, Markdown report.
 - `src/checks/run_checks.py`: Databricks notebook that runs the checks after ingestion and writes the metadata tables and report.
+- `src/platform/platform_config.py`: loads `config/platform.yml`; derives schema names and volume paths.
 - `src/platform/catalog_setup.py`: builds idempotent Unity Catalog DDL.
 - `src/platform/bootstrap_catalog.py`: Databricks notebook that executes the DDL.
 - `tools/`: development Databricks notebooks (e.g. `run_tests`, `discover_datasets`); not run as job tasks.
@@ -43,6 +45,7 @@ All tests must pass before committing.
 1. **Keep logic testable.** Put logic in plain Python modules; keep Databricks
    notebooks thin (widgets, wiring, `spark.sql`). Network access goes through
    an injected session so tests can use fakes. Add or update tests with every change.
+   Follow ADR 0006: keep parsing and business rules in portable Python/SQL.
 2. **Idempotent and safe ingestion.** Never store HTML error pages; write
    files atomically; one failure must not stop other datasets; preserve the
    metadata-cache fallback.
@@ -55,8 +58,11 @@ All tests must pass before committing.
    follow `docs/registry_review.md`; record new questions in `docs/questions.md`.
 5. **No data, no secrets in Git.** Credentials come from Databricks secrets.
    Do not hard-code personal emails or tokens.
-6. **Unity Catalog names** are lower-case `snake_case`; volumes are
-   `landing.raw` and `landing.meta`.
+6. **Unity Catalog names** are lower-case `snake_case` and layer first:
+   `landing` (volumes `raw` and `meta`), `metadata`, `shared`, `bronze_<source>`,
+   `silver_<domain>`, `gold_<domain>`. The catalog and these conventions are in
+   `config/platform.yml`; never hard-code a catalog name or a `/Volumes/` path
+   (ADR 0007).
 7. **Comments and docs in English.** Update `docs/architecture.md` when a
    design decision changes.
 8. **Notebooks are source-format `.py`.** Write every Databricks notebook as a

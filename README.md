@@ -23,13 +23,18 @@ Manitoba and expands to other provinces over time.
 open.canada.ca (CKAN API) ──► ckan_ingest (registry-driven, idempotent)
                                    │
                                    ▼
-            /Volumes/mapledata/landing/raw/<source>/<dataset>/...   raw files
+            /Volumes/<catalog>/landing/raw/<source>/<dataset>/...   raw files
                                    │  Auto Loader
                                    ▼
-            <domain>_bronze ──► <domain>_silver ──► <domain>_gold   Lakeflow pipelines
+            bronze_<source> ──► silver_<domain> ──► gold_<domain>   Lakeflow pipelines
                                    ▲
                                shared (dim_geography, dim_noc, dim_date)
 ```
+
+The catalog is `living_canada`, named for its content. Schemas are layer first:
+`landing` (volumes `raw` and `meta`), `metadata`, `shared`, `bronze_<source>`,
+`silver_<domain>` and `gold_<domain>`. The catalog and naming conventions are in
+[config/platform.yml](config/platform.yml).
 
 Orchestrated by Lakeflow Jobs. Full design and decisions:
 [docs/architecture.md](docs/architecture.md). Why each major choice was made:
@@ -43,11 +48,13 @@ next: [docs/backlog.md](docs/backlog.md).
 
 ```
 config/datasets.yml              dataset registry (add datasets here)
+config/platform.yml              catalog name and schema conventions
 src/ingest/ckan_ingest.py        generic CKAN ingester
 src/ingest/ckan_discover.py      search CKAN, build snapshot rows, draft entries
 src/ingest/run_ingestion.py      Databricks notebook: run ingestion (job task)
 src/checks/ingestion_checks.py   post-ingestion checks: snapshot rows, findings, report
 src/checks/run_checks.py         Databricks notebook: run the checks after ingestion
+src/platform/platform_config.py  loads config/platform.yml: schema names, volume paths
 src/platform/catalog_setup.py    builds the Unity Catalog DDL
 src/platform/bootstrap_catalog.py Databricks notebook: create catalog from zero
 tools/                           development notebooks (run_tests, discover_datasets)
@@ -98,7 +105,7 @@ Line endings are LF in the repository (`.gitattributes`), also on Windows.
 Add an entry to `config/datasets.yml` (see the comments in that file). Every
 entry needs a `status` (`candidate`, `active`, `deprecated` or `excluded`) and a
 `purpose`; only `active` entries are ingested. Run the tests, then run ingestion for that
-key. If the domain is new, re-run `bootstrap_catalog` to create its schemas.
+key. If the source or domain is new, re-run `bootstrap_catalog` to create its schemas.
 `tools/discover_datasets` can search CKAN and draft entries for you.
 
 ## Data sources and licences
