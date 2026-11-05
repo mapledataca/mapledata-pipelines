@@ -301,6 +301,11 @@ of its last appearance.
 - Every chart on the website states its data year and source licence.
 - Use current Databricks product names (Lakeflow Jobs, Lakeflow Spark
   Declarative Pipelines, Declarative Automation Bundles, AUTO CDC, Git folders).
+- **Portable core, platform-specific edges.** Ingestion, checks and
+  file-parsing rules are pure Python, transformation SQL is standard where
+  possible, and Databricks features are used deliberately at the edges, so a
+  later DuckDB + dbt implementation can reuse the core
+  ([ADR 0006](decisions/0006-portable-core-platform-edges.md)).
 
 ## 8. Metadata model
 

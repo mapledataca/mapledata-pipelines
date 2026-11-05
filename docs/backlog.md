@@ -47,3 +47,4 @@ Temporary; may move to GitHub Issues. Keep the IDs when it does.
 
 - Other domains: cost of living, housing, health, education.
 - mapledata.io static site with source and licence attribution.
+- **L3** Second implementation on DuckDB + dbt over the same raw files, after the exam; compare with the Databricks version. See [ADR 0006](decisions/0006-portable-core-platform-edges.md).

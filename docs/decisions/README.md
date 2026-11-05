@@ -14,6 +14,7 @@ Consequences.
 | [0003](0003-snapshot-versioning.md) | Snapshot versioning of landed files | Accepted |
 | [0004](0004-csv-first.md) | Ingest CSV first | Superseded by 0005 |
 | [0005](0005-prefer-csv-land-excel-too.md) | Prefer CSV, and also land Excel when a table has no CSV | Accepted |
+| [0006](0006-portable-core-platform-edges.md) | Portable core, platform-specific edges | Accepted |
 
 Source-specific findings (quirks, update patterns, open questions) live in
 [docs/sources/](../sources/).
