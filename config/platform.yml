@@ -4,7 +4,7 @@
 #
 # Schema names are layer first, lower-case snake_case:
 #   landing            volumes `raw` and `meta`; files are organized by source in the path
-#   metadata           platform metadata tables
+#   metadata           platform metadata tables (fixed name)
 #   shared             conformed dimensions used by several domains
 #   bronze_<source>    one schema per registry `source`
 #   silver_<domain>    one schema per registry `domain`
@@ -15,7 +15,6 @@ catalog: living_canada
 landing_schema: landing
 raw_volume: raw
 meta_volume: meta
-metadata_schema: metadata
 shared_schema: shared
 
 layer_prefixes:

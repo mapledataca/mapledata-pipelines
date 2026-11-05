@@ -1,7 +1,7 @@
 """
 catalog_setup.py
 
-Builds the Unity Catalog structure for mapledata from zero, idempotently.
+Builds the Unity Catalog structure from zero, idempotently.
 Every statement uses IF NOT EXISTS, so running it again is safe.
 
 Structure created
@@ -17,10 +17,12 @@ Structure created
     │   ├── ckan_resource_snapshot (table) resources CKAN lists, per checked run
     │   ├── ckan_resource_current (view)   latest row per resource_id
     │   └── ingestion_findings    (table)  post-ingestion check findings
-    └── <domain>_bronze / _silver / _gold   one set per domain
+    ├── bronze_<source>         one schema per registry source
+    └── silver_<domain>, gold_<domain>   one schema each per registry domain
 
-The domains are read from config/datasets.yml, so adding a dataset with a new
-domain and re-running the bootstrap creates that domain's schemas.
+Names come from config/platform.yml (see platform_config.py). Sources and
+domains are read from config/datasets.yml, so adding a dataset with a new source
+or domain and re-running the bootstrap creates its schemas.
 
 Comments on the metadata tables are kept in code, but they are applied only
 where they differ from the comments the tables have now: re-applying an
@@ -35,23 +37,10 @@ bootstrap_catalog.py reads the current comments and executes the statements.
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from typing import Iterable, Optional
 
-#: Layers created for every domain (medallion architecture).
-LAYERS = ("bronze", "silver", "gold")
-
-#: Unity Catalog names used here: lower-case letters, digits, underscores.
-#: Strict on purpose, because names are interpolated into SQL text.
-_SAFE_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
-
-
-def _check(name: str, what: str) -> str:
-    """Reject anything that is not a plain identifier (also blocks SQL injection)."""
-    if not _SAFE_NAME.match(name or ""):
-        raise ValueError(f"invalid {what} name {name!r}; must match {_SAFE_NAME.pattern}")
-    return name
+from platform_config import PlatformConfig, check_identifier as _check
 
 
 #: Columns of metadata.ckan_dataset_snapshot as (name, type, comment).
@@ -276,14 +265,6 @@ def _create_table(catalog: str, name: str, columns: tuple, comment: str) -> str:
     )
 
 
-def domain_schemas(domains: Iterable[str]) -> list:
-    """Schema names for the given domains, e.g. ["immigration_bronze", ...].
-
-    Duplicates are removed and the order is deterministic (sorted by domain).
-    """
-    return [f"{_check(d, 'domain')}_{layer}" for d in sorted(set(domains)) for layer in LAYERS]
-
-
 @dataclass(frozen=True)
 class SetupPlan:
     """Everything the bootstrap runs, in the order it must run.
@@ -300,7 +281,11 @@ class SetupPlan:
 
 
 def build_setup_plan(
-    catalog: str, domains: Iterable[str], current: Optional[dict] = None
+    catalog: str,
+    sources: Iterable[str],
+    domains: Iterable[str],
+    current: Optional[dict] = None,
+    config: Optional[PlatformConfig] = None,
 ) -> SetupPlan:
     """The ordered statements of a bootstrap, given the current table comments.
 
@@ -313,42 +298,54 @@ def build_setup_plan(
 
     current is what parse_current_comments returns (None: no table exists yet).
     """
-    statements, views = build_ddl_parts(catalog, domains)
+    statements, views = build_ddl_parts(catalog, sources, domains, config)
     comments = build_comment_statements(catalog, current)
     migrations = build_add_column_statements(catalog, comments.missing_columns)
     return SetupPlan(statements + migrations + comments.statements + views, comments, migrations)
 
 
-def build_ddl(catalog: str, domains: Iterable[str]) -> list:
+def build_ddl(
+    catalog: str,
+    sources: Iterable[str],
+    domains: Iterable[str],
+    config: Optional[PlatformConfig] = None,
+) -> list:
     """Return the ordered list of idempotent DDL statements: everything that
     creates objects, with the views last.
 
     Altering existing tables (ADD COLUMNS, comments) is not included: see
     build_setup_plan, which puts those between the tables and the views.
     """
-    statements, views = build_ddl_parts(catalog, domains)
+    statements, views = build_ddl_parts(catalog, sources, domains, config)
     return statements + views
 
 
-def build_ddl_parts(catalog: str, domains: Iterable[str]) -> tuple:
+def build_ddl_parts(
+    catalog: str,
+    sources: Iterable[str],
+    domains: Iterable[str],
+    config: Optional[PlatformConfig] = None,
+) -> tuple:
     """Return (statements, views): the idempotent CREATE statements without the
     views, and the CREATE OR REPLACE VIEW statements.
 
     Order within statements matters: catalog, then schemas, then volumes inside
     schemas, then the tables.
     """
+    cfg = config or PlatformConfig()
     c = _check(catalog, "catalog")
+    landing, shared = cfg.landing_schema, cfg.shared_schema
     statements = [
         f"CREATE CATALOG IF NOT EXISTS `{c}` "
-        f"COMMENT 'mapledata.io: Canadian open data, national scope'",
-        f"CREATE SCHEMA IF NOT EXISTS `{c}`.`landing` "
-        f"COMMENT 'Raw files from external sources'",
-        f"CREATE VOLUME IF NOT EXISTS `{c}`.`landing`.`raw` "
+        f"COMMENT 'Socio-economic data about living in Canada, national scope'",
+        f"CREATE SCHEMA IF NOT EXISTS `{c}`.`{landing}` "
+        f"COMMENT 'Raw files from external sources, organized by source in the path'",
+        f"CREATE VOLUME IF NOT EXISTS `{c}`.`{landing}`.`{cfg.raw_volume}` "
         f"COMMENT 'Raw data files written by the ingester'",
-        f"CREATE VOLUME IF NOT EXISTS `{c}`.`landing`.`meta` "
+        f"CREATE VOLUME IF NOT EXISTS `{c}`.`{landing}`.`{cfg.meta_volume}` "
         f"COMMENT 'Metadata cache and ingestion run logs'",
-        f"CREATE SCHEMA IF NOT EXISTS `{c}`.`shared` "
-        f"COMMENT 'Cross-domain dimensions (geography, NOC, date)'",
+        f"CREATE SCHEMA IF NOT EXISTS `{c}`.`{shared}` "
+        f"COMMENT 'Conformed dimensions used by several domains (geography, time, NOC)'",
         f"CREATE SCHEMA IF NOT EXISTS `{c}`.`metadata` "
         f"COMMENT 'Platform metadata, e.g. dataset discovery snapshots'",
         _create_table(
@@ -378,10 +375,18 @@ def build_ddl_parts(catalog: str, domains: Iterable[str]) -> tuple:
     # CREATE TABLE IF NOT EXISTS leaves an existing table as it is, so comments
     # that changed (or arrived later) are applied by build_comment_statements,
     # which compares them with the comments the tables have now.
-    for schema in domain_schemas(domains):
-        domain, layer = schema.rsplit("_", 1)
+    for source in sorted(set(sources)):
         statements.append(
-            f"CREATE SCHEMA IF NOT EXISTS `{c}`.`{schema}` "
-            f"COMMENT '{domain} domain, {layer} layer'"
+            f"CREATE SCHEMA IF NOT EXISTS `{c}`.`{cfg.bronze_schema(source)}` "
+            f"COMMENT 'Bronze layer: data from source {source}'"
         )
+    for domain in sorted(set(domains)):
+        for schema, layer in (
+            (cfg.silver_schema(domain), "silver"),
+            (cfg.gold_schema(domain), "gold"),
+        ):
+            statements.append(
+                f"CREATE SCHEMA IF NOT EXISTS `{c}`.`{schema}` "
+                f"COMMENT '{domain} domain, {layer} layer'"
+            )
     return statements, views

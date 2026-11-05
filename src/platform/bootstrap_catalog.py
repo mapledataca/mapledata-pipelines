@@ -4,16 +4,19 @@
 # environment_version = "6"
 # ///
 # MAGIC %md
-# MAGIC # Bootstrap the mapledata catalog
+# MAGIC # Bootstrap the catalog
 # MAGIC Creates the catalog, schemas and volumes from zero. Safe to re-run: every
-# MAGIC statement uses `IF NOT EXISTS`. Domains come from `config/datasets.yml`.
+# MAGIC statement uses `IF NOT EXISTS`. The catalog and schema conventions come from
+# MAGIC `config/platform.yml`; sources and domains come from `config/datasets.yml`
+# MAGIC (`bronze_<source>`, `silver_<domain>`, `gold_<domain>`).
 # MAGIC
 # MAGIC Run this once per workspace, and again after adding a dataset whose
-# MAGIC domain is new.
+# MAGIC source or domain is new. `dry_run` prints the full plan without running it.
+# MAGIC The `catalog` widget overrides the configured catalog (empty = config).
 
 # COMMAND ----------
 
-dbutils.widgets.text("catalog", "mapledata")
+dbutils.widgets.text("catalog", "")
 dbutils.widgets.dropdown("dry_run", "false", ["true", "false"])
 
 # COMMAND ----------
@@ -24,13 +27,18 @@ from pathlib import Path
 # This notebook lives in src/platform/; the repository root is two levels up.
 repo_root = Path.cwd().parents[1]
 sys.path.insert(0, str(repo_root / "src" / "ingest"))
+sys.path.insert(0, str(repo_root / "src" / "platform"))
 
 import catalog_setup as cs
 import ckan_ingest as ci
+import platform_config as pc
 
-catalog = dbutils.widgets.get("catalog")
+config = pc.load_platform_config(str(repo_root / "config" / "platform.yml"))
+catalog = config.resolve_catalog(dbutils.widgets.get("catalog"))
 specs = ci.load_registry(str(repo_root / "config" / "datasets.yml"))
-domains = {s.domain for s in specs}  # include non-active datasets: schemas are cheap
+# Include non-active datasets: schemas are cheap.
+sources = {s.source for s in specs}
+domains = {s.domain for s in specs}
 
 # Read the comments the metadata tables have now, before any DDL runs. Re-applying
 # an unchanged comment still creates a Delta version, so only differences run.
@@ -49,7 +57,7 @@ else:
 # column-exists check is the comparison above), comment statements, and the views
 # last. A SELECT * view is bound when it is created, so it has to be recreated
 # after the tables changed.
-plan = cs.build_setup_plan(catalog, domains, current)
+plan = cs.build_setup_plan(catalog, sources, domains, current, config)
 
 dry_run = dbutils.widgets.get("dry_run") == "true"
 for sql in plan.statements:
@@ -59,7 +67,8 @@ for sql in plan.statements:
 
 print(f"\n{plan.comments.up_to_date} comments up to date")
 print(
-    f"Done: {len(plan.statements)} statements for domains {sorted(domains)}, "
+    f"Done: {len(plan.statements)} statements for catalog {catalog}, "
+    f"sources {sorted(sources)}, domains {sorted(domains)}, "
     f"{len(plan.migrations)} columns added, "
     f"{len(plan.comments.statements)} comment statements"
 )

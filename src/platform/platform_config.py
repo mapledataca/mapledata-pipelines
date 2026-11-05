@@ -50,7 +50,6 @@ class PlatformConfig:
     landing_schema: str = "landing"
     raw_volume: str = "raw"
     meta_volume: str = "meta"
-    metadata_schema: str = "metadata"
     shared_schema: str = "shared"
     layer_prefixes: dict = field(
         default_factory=lambda: {layer: layer for layer in LAYERS}
@@ -99,7 +98,6 @@ _NAME_FIELDS = (
     "landing_schema",
     "raw_volume",
     "meta_volume",
-    "metadata_schema",
     "shared_schema",
 )
 
