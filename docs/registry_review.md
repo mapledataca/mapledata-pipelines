@@ -35,14 +35,14 @@ in [questions.md](questions.md).
 
 Screen the datasets that no registry entry covers, using the latest row per
 dataset (`ckan_dataset_current`). Set the catalog name if it is not
-`mapledata`. This query has not been run on Databricks yet; check the output
+`living_canada` (see `config/platform.yml`). This query has not been run on Databricks yet; check the output
 against the portal before relying on it.
 
 ```sql
 -- Unregistered datasets with a usable format that are not clearly stale.
 SELECT organization_name, name, title, formats, frequency,
        coverage_start, coverage_end, resource_count, search_queries
-FROM mapledata.metadata.ckan_dataset_current
+FROM living_canada.metadata.ckan_dataset_current
 WHERE NOT is_registered
   AND arrays_overlap(formats, array('CSV', 'XLSX', 'XLS'))
   AND (coverage_end IS NULL OR coverage_end >= add_months(current_date(), -36))
@@ -59,14 +59,14 @@ To see what the format and currency filters drop (and to give each of them an
 ```sql
 -- No CSV/XLSX/XLS resource: pdf_only candidates.
 SELECT organization_name, name, title, formats
-FROM mapledata.metadata.ckan_dataset_current
+FROM living_canada.metadata.ckan_dataset_current
 WHERE NOT is_registered
   AND NOT arrays_overlap(formats, array('CSV', 'XLSX', 'XLS'))
 ORDER BY organization_name, name;
 
 -- Old coverage: stale candidates.
 SELECT organization_name, name, title, frequency, coverage_end
-FROM mapledata.metadata.ckan_dataset_current
+FROM living_canada.metadata.ckan_dataset_current
 WHERE NOT is_registered
   AND coverage_end < add_months(current_date(), -36)
 ORDER BY coverage_end;

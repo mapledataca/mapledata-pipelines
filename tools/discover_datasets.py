@@ -26,7 +26,8 @@
 # MAGIC - `domain`: domain for the draft entries, e.g. `immigration`
 # MAGIC - `page_size`: results fetched per request (1 to 1000)
 # MAGIC - `base_url`: CKAN Action API base URL
-# MAGIC - `catalog`: Unity Catalog catalog holding the `metadata` schema
+# MAGIC - `catalog`: Unity Catalog catalog holding the `metadata` schema; empty =
+# MAGIC   `config/platform.yml`
 # MAGIC - `max_drafts`: most drafts to print (0 prints none)
 # MAGIC - `save_snapshot`: `true` appends the results to the snapshot table
 
@@ -37,7 +38,7 @@ dbutils.widgets.text("organizations", "")
 dbutils.widgets.text("domain", "immigration")
 dbutils.widgets.text("page_size", "100")
 dbutils.widgets.text("base_url", "https://open.canada.ca/data/api/3/action")
-dbutils.widgets.text("catalog", "mapledata")
+dbutils.widgets.text("catalog", "")
 dbutils.widgets.text("max_drafts", "20")
 dbutils.widgets.dropdown("save_snapshot", "true", ["true", "false"])
 dbutils.widgets.text("user_agent", "mapledata.io pipeline")
@@ -52,9 +53,14 @@ from pathlib import Path
 here = Path.cwd()
 root = next(p for p in [here, *here.parents] if (p / "config" / "datasets.yml").exists())
 sys.path.insert(0, str(root / "src" / "ingest"))
+sys.path.insert(0, str(root / "src" / "platform"))
 
 import ckan_discover as cd
 import ckan_ingest as ci
+import platform_config as pc
+
+config = pc.load_platform_config(str(root / "config" / "platform.yml"))
+catalog = config.resolve_catalog(dbutils.widgets.get("catalog"))
 
 queries = cd.parse_queries(dbutils.widgets.get("query"))
 organizations = cd.parse_organizations(dbutils.widgets.get("organizations"))
@@ -93,7 +99,7 @@ display(df)
 # COMMAND ----------
 
 if dbutils.widgets.get("save_snapshot") == "true":
-    table = f"{dbutils.widgets.get('catalog')}.metadata.ckan_dataset_snapshot"
+    table = f"{catalog}.metadata.ckan_dataset_snapshot"
     df.write.mode("append").saveAsTable(table)
     print(f"Appended {len(rows)} rows to {table}")
 else:

@@ -3,7 +3,7 @@ ckan_ingest.py
 
 Generic, registry-driven ingestion of files published on CKAN portals
 (open.canada.ca and any other CKAN site) into a landing area, for example a
-Unity Catalog volume such as /Volumes/mapledata/landing/raw.
+Unity Catalog volume (the landing raw volume of the configured catalog).
 
 This module generalises the earlier lmia_ingest.py. Adding a new dataset is a
 configuration change (one entry in config/datasets.yml), not a code change.

@@ -1,5 +1,6 @@
 """Tests for platform_config: parsing, validation, schema names, volume paths."""
 
+import re
 from pathlib import Path
 
 import pytest
@@ -85,3 +86,19 @@ def test_resolve_catalog_prefers_a_widget_value():
     assert cfg.resolve_catalog(" living_canada_dev ") == "living_canada_dev"
     with pytest.raises(ValueError):
         cfg.resolve_catalog("Not Valid")
+
+
+def test_no_catalog_or_volume_literals_in_src_outside_the_config_loader():
+    """Catalog names and /Volumes/ paths come from config/platform.yml."""
+    offenders = []
+    for path in (ROOT / "src").rglob("*.py"):
+        if path.name == "platform_config.py":
+            continue
+        text = path.read_text(encoding="utf-8")
+        for literal in ("living_canada", "/Volumes/"):
+            if literal in text:
+                offenders.append(f"{path.relative_to(ROOT)}: {literal}")
+        # The old catalog name, but not the website name mapledata.io.
+        if re.search(r"mapledata(?![.\w-])", text):
+            offenders.append(f"{path.relative_to(ROOT)}: mapledata")
+    assert offenders == []

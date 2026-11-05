@@ -17,17 +17,16 @@
 # MAGIC Widgets:
 # MAGIC - `run_id`: run to check; empty = the latest run found in the run logs
 # MAGIC - `domains`, `keys`: comma-separated filters, empty = all active datasets
-# MAGIC - `meta_root`, `landing_root`: volume paths used by the ingestion
-# MAGIC - `catalog`: Unity Catalog catalog holding the `metadata` schema
+# MAGIC - `catalog`: Unity Catalog catalog holding the `metadata` schema and the landing
+# MAGIC   volumes; empty = `config/platform.yml`. The volume paths used by the
+# MAGIC   ingestion are derived from it.
 
 # COMMAND ----------
 
 dbutils.widgets.text("run_id", "")
 dbutils.widgets.text("domains", "")
 dbutils.widgets.text("keys", "")
-dbutils.widgets.text("meta_root", "/Volumes/mapledata/landing/meta")
-dbutils.widgets.text("landing_root", "/Volumes/mapledata/landing/raw")
-dbutils.widgets.text("catalog", "mapledata")
+dbutils.widgets.text("catalog", "")
 
 # COMMAND ----------
 
@@ -39,9 +38,11 @@ from pathlib import Path
 repo_root = Path.cwd().parents[1]
 sys.path.insert(0, str(repo_root / "src" / "ingest"))
 sys.path.insert(0, str(repo_root / "src" / "checks"))
+sys.path.insert(0, str(repo_root / "src" / "platform"))
 
 import ckan_ingest as ci
 import ingestion_checks as ic
+import platform_config as pc
 
 
 def _csv(name):
@@ -50,9 +51,10 @@ def _csv(name):
     return [v.strip() for v in value.split(",") if v.strip()] or None
 
 
-meta_root = dbutils.widgets.get("meta_root")
-landing_root = dbutils.widgets.get("landing_root")
-catalog = dbutils.widgets.get("catalog")
+config = pc.load_platform_config(str(repo_root / "config" / "platform.yml"))
+catalog = config.resolve_catalog(dbutils.widgets.get("catalog"))
+meta_root = config.meta_volume_path(catalog)
+landing_root = config.raw_volume_path(catalog)
 
 specs = ci.select_specs(
     ci.load_registry(str(repo_root / "config" / "datasets.yml")),

@@ -1116,8 +1116,8 @@ def test_replace_where_rejects_empty_or_unsafe_dataset_keys(keys):
 
 
 def test_qualified_table_checks_both_names():
-    assert ic.qualified_table("mapledata", "ingestion_findings") == (
-        "`mapledata`.`metadata`.`ingestion_findings`"
+    assert ic.qualified_table("living_canada", "ingestion_findings") == (
+        "`living_canada`.`metadata`.`ingestion_findings`"
     )
     for catalog, table in [("Map", "t"), ("c", "t; drop"), ("", "t"), ("c", "")]:
         with pytest.raises(ValueError):

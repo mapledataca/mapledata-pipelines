@@ -37,7 +37,7 @@ ORGANIZATION_LABEL = "org:"
 #: stable; the default (score, then modified) reshuffles as datasets change.
 SEARCH_SORT = "name asc"
 
-#: Columns of mapledata.metadata.ckan_dataset_snapshot, in order. The table is
+#: Columns of <catalog>.metadata.ckan_dataset_snapshot, in order. The table is
 #: created by catalog_setup.py, which keeps its own copy of this list; a test
 #: checks that the two agree.
 SNAPSHOT_COLUMNS = (
