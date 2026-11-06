@@ -903,12 +903,12 @@ def replace_where_predicate(run_id: str, dataset_keys: Iterable) -> str:
     return f"run_id = '{validate_run_id(run_id)}' AND dataset_key IN ({quoted})"
 
 
-def qualified_table(catalog: str, table: str) -> str:
-    """`catalog`.`metadata`.`table`, after checking both names."""
-    for name in (catalog, table):
+def qualified_table(catalog: str, schema: str, table: str) -> str:
+    """`catalog`.`schema`.`table`, after checking the three names."""
+    for name in (catalog, schema, table):
         if not _SAFE_NAME.match(name or ""):
             raise ValueError(f"invalid name {name!r}; must match {_SAFE_NAME.pattern}")
-    return f"`{catalog}`.`metadata`.`{table}`"
+    return f"`{catalog}`.`{schema}`.`{table}`"
 
 
 def _meta_dir(meta_root: str, spec: ci.DatasetSpec) -> Path:

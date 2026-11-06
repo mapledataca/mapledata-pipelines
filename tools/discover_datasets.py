@@ -99,7 +99,7 @@ display(df)
 # COMMAND ----------
 
 if dbutils.widgets.get("save_snapshot") == "true":
-    table = f"{catalog}.metadata.ckan_dataset_snapshot"
+    table = f"{catalog}.{pc.METADATA_SCHEMA}.ckan_dataset_snapshot"
     df.write.mode("append").saveAsTable(table)
     print(f"Appended {len(rows)} rows to {table}")
 else:

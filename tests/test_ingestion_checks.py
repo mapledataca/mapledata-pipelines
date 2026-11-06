@@ -1115,13 +1115,16 @@ def test_replace_where_rejects_empty_or_unsafe_dataset_keys(keys):
         ic.replace_where_predicate(RUN, keys)
 
 
-def test_qualified_table_checks_both_names():
-    assert ic.qualified_table("living_canada", "ingestion_findings") == (
-        "`living_canada`.`metadata`.`ingestion_findings`"
+def test_qualified_table_checks_all_names():
+    assert ic.qualified_table("test_catalog", "test_schema", "ingestion_findings") == (
+        "`test_catalog`.`test_schema`.`ingestion_findings`"
     )
-    for catalog, table in [("Map", "t"), ("c", "t; drop"), ("", "t"), ("c", "")]:
+    for catalog, schema, table in [
+        ("Map", "s", "t"), ("c", "S", "t"), ("c", "s", "t; drop"),
+        ("", "s", "t"), ("c", "", "t"), ("c", "s", ""),
+    ]:
         with pytest.raises(ValueError):
-            ic.qualified_table(catalog, table)
+            ic.qualified_table(catalog, schema, table)
 
 
 def test_report_path_lives_under_reports(tmp_path):

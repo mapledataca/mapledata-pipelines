@@ -28,6 +28,9 @@ SAFE_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 LAYERS = ("bronze", "silver", "gold")
 
 DEFAULT_CATALOG = "living_canada"
+#: Schema of the platform metadata tables. Defined once here; the notebooks pass
+#: it to the pure-Python core and catalog_setup uses it for the DDL.
+METADATA_SCHEMA = "metadata"
 VOLUMES_ROOT = "/Volumes"
 
 

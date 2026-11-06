@@ -40,7 +40,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Iterable, Optional
 
-from platform_config import PlatformConfig, check_identifier as _check
+from platform_config import METADATA_SCHEMA, PlatformConfig, check_identifier as _check
 
 
 #: Columns of metadata.ckan_dataset_snapshot as (name, type, comment).
@@ -165,7 +165,7 @@ def current_comments_queries(catalog: str) -> tuple:
     """
     c = _check(catalog, "catalog")
     names = ", ".join(f"'{name}'" for name, _cols, _note in METADATA_TABLES)
-    where = f"WHERE table_schema = 'metadata' AND table_name IN ({names})"
+    where = f"WHERE table_schema = '{METADATA_SCHEMA}' AND table_name IN ({names})"
     return (
         f"SELECT table_name, comment FROM `{c}`.information_schema.tables {where}",
         f"SELECT table_name, column_name, comment "
@@ -205,7 +205,7 @@ def build_comment_statements(catalog: str, current: Optional[dict] = None) -> Co
         state = current.get(name)
         if state is None:
             continue
-        table = f"`{c}`.`metadata`.`{name}`"
+        table = f"`{c}`.`{METADATA_SCHEMA}`.`{name}`"
         if state["comment"] == comment:
             up_to_date += 1
         else:
@@ -250,7 +250,7 @@ def build_add_column_statements(catalog: str, missing_columns: Iterable) -> list
             raise ValueError(f"{table}.{col} is not a column defined in METADATA_TABLES")
         kind, note = defined[(table, col)]
         statements.append(
-            f"ALTER TABLE `{c}`.`metadata`.`{table}` "
+            f"ALTER TABLE `{c}`.`{METADATA_SCHEMA}`.`{table}` "
             f"ADD COLUMNS ({col} {kind} COMMENT '{note}')"
         )
     return statements
@@ -260,7 +260,7 @@ def _create_table(catalog: str, name: str, columns: tuple, comment: str) -> str:
     """CREATE TABLE IF NOT EXISTS with a table comment and a comment per column."""
     cols = ", ".join(f"{col} {kind} COMMENT '{note}'" for col, kind, note in columns)
     return (
-        f"CREATE TABLE IF NOT EXISTS `{catalog}`.`metadata`.`{name}` ({cols}) "
+        f"CREATE TABLE IF NOT EXISTS `{catalog}`.`{METADATA_SCHEMA}`.`{name}` ({cols}) "
         f"COMMENT '{comment}'"
     )
 
@@ -346,7 +346,7 @@ def build_ddl_parts(
         f"COMMENT 'Metadata cache and ingestion run logs'",
         f"CREATE SCHEMA IF NOT EXISTS `{c}`.`{shared}` "
         f"COMMENT 'Conformed dimensions used by several domains (geography, time, NOC)'",
-        f"CREATE SCHEMA IF NOT EXISTS `{c}`.`metadata` "
+        f"CREATE SCHEMA IF NOT EXISTS `{c}`.`{METADATA_SCHEMA}` "
         f"COMMENT 'Platform metadata, e.g. dataset discovery snapshots'",
         _create_table(
             c, "ckan_dataset_snapshot", SNAPSHOT_COLUMNS, DATASET_SNAPSHOT_COMMENT
@@ -360,15 +360,15 @@ def build_ddl_parts(
     # IF NOT EXISTS together with OR REPLACE. They are returned separately so
     # they run after the tables are altered.
     views = [
-        f"CREATE OR REPLACE VIEW `{c}`.`metadata`.`ckan_dataset_current` "
+        f"CREATE OR REPLACE VIEW `{c}`.`{METADATA_SCHEMA}`.`ckan_dataset_current` "
         f"COMMENT 'Latest snapshot row per ckan_id' AS "
-        f"SELECT * FROM `{c}`.`metadata`.`ckan_dataset_snapshot` "
+        f"SELECT * FROM `{c}`.`{METADATA_SCHEMA}`.`ckan_dataset_snapshot` "
         f"QUALIFY row_number() OVER ("
         f"PARTITION BY ckan_id ORDER BY discovered_at DESC, run_id DESC) = 1",
-        f"CREATE OR REPLACE VIEW `{c}`.`metadata`.`ckan_resource_current` "
+        f"CREATE OR REPLACE VIEW `{c}`.`{METADATA_SCHEMA}`.`ckan_resource_current` "
         f"COMMENT 'Latest snapshot row per resource_id; a removed resource keeps "
         f"the run_id of its last appearance' AS "
-        f"SELECT * FROM `{c}`.`metadata`.`ckan_resource_snapshot` "
+        f"SELECT * FROM `{c}`.`{METADATA_SCHEMA}`.`ckan_resource_snapshot` "
         f"QUALIFY row_number() OVER ("
         f"PARTITION BY resource_id ORDER BY checked_at DESC, run_id DESC) = 1",
     ]

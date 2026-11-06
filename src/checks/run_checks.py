@@ -73,8 +73,8 @@ checked = [s for s in specs if s.key in run_logs]
 skipped = [s.key for s in specs if s.key not in run_logs]
 metadata = {s.key: ic.load_metadata(meta_root, s) for s in checked}
 
-snapshot_table = ic.qualified_table(catalog, "ckan_resource_snapshot")
-findings_table = ic.qualified_table(catalog, "ingestion_findings")
+snapshot_table = ic.qualified_table(catalog, pc.METADATA_SCHEMA, "ckan_resource_snapshot")
+findings_table = ic.qualified_table(catalog, pc.METADATA_SCHEMA, "ingestion_findings")
 
 # The previous snapshot of each dataset, for added and removed resources.
 previous = {}
